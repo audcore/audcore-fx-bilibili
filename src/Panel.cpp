@@ -40,17 +40,17 @@ constexpr float toolbarHeight = 50.f;
 
 struct Words {
     const wchar_t *name, *home, *search, *placeholder, *sample, *more, *back, *danmaku, *parts,
-        *play, *pause, *loading, *empty, *searchError, *videoError, *hardware, *audio, *seek;
+        *play, *pause, *loading, *empty, *searchError, *videoError, *hardware, *audio, *seek, *volume;
 };
 constexpr Words chinese{L"哔哩哔哩", L"返回首页", L"搜索", L"关键词、BV / AV 号或视频链接", L"音乐现场",
     L"加载更多", L"返回", L"弹幕", L"选集", L"播放", L"暂停", L"正在加载…", L"未找到相关视频",
-    L"搜索失败，请重试", L"这个视频暂时无法播放", L"当前显卡无法硬解此视频", L"请先启动声核音频", L"播放进度"};
+    L"搜索失败，请重试", L"这个视频暂时无法播放", L"当前显卡无法硬解此视频", L"请先启动声核音频", L"播放进度", L"音量"};
 constexpr Words english{L"bilibili", L"Home", L"Search", L"Keywords, BV / AV, or video URL", L"live music",
     L"More", L"Back", L"Danmaku", L"Parts", L"Play", L"Pause", L"Loading…", L"No videos found",
-    L"Search failed. Try again.", L"This video is unavailable", L"Hardware decoding unavailable", L"Start Audcore audio first", L"Position"};
+    L"Search failed. Try again.", L"This video is unavailable", L"Hardware decoding unavailable", L"Start Audcore audio first", L"Position", L"Volume"};
 constexpr Words japanese{L"ビリビリ", L"ホーム", L"検索", L"キーワード、BV / AV、動画URL", L"音楽ライブ",
     L"もっと見る", L"戻る", L"弾幕", L"話数", L"再生", L"一時停止", L"読込中…", L"動画が見つかりません",
-    L"検索に失敗しました", L"再生できない動画です", L"ハードウェア復号不可", L"声核の音声を開始してください", L"再生位置"};
+    L"検索に失敗しました", L"再生できない動画です", L"ハードウェア復号不可", L"声核の音声を開始してください", L"再生位置", L"音量"};
 
 enum class Page { home, results, player };
 enum class Action { home, purchase, search, sample, demo, card, more, back, danmaku, parts, play };
@@ -322,7 +322,7 @@ class Panel {
         TextPixels pixels;
     };
 
-    HWND parent, window = nullptr, edit = nullptr, progress = nullptr;
+    HWND parent, window = nullptr, edit = nullptr, progress = nullptr, volumeControl = nullptr;
     AudcoreFxEdit editCallback;
     void* editContext;
     std::shared_ptr<Server> server;
@@ -350,7 +350,10 @@ class Panel {
     size_t usedButtons = 0, nextComment = 0;
     uint32_t generation = 0;
     float width = 720, height = 540, scale = 1, scroll = 0;
-    Box editorBox, seekBox, timeBox;
+    Box editorBox, seekBox, timeBox, volumeBox;
+    unsigned volumeLevel = defaultVolume;
+    struct VolumeDrag { POINT origin; unsigned level; bool editing = false; };
+    std::optional<VolumeDrag> volumeDrag;
     float homeNameWidth = 0, versionWidth = 0, timeWidth = 0;
     int resultPage = 0, totalPages = 0;
     bool busy = false, dm = true, hovering = false, keyboard = false, started = false, seeking = false;
@@ -396,11 +399,16 @@ public:
             0, 0, 0, 0, window, nullptr, module, nullptr);
         progress = CreateWindowExW(WS_EX_TRANSPARENT, TRACKBAR_CLASSW, words->seek,
             WS_CHILD | WS_TABSTOP | TBS_NOTICKS, 0, 0, 0, 0, window, nullptr, module, nullptr);
-        if (!edit || !progress) return false;
+        volumeControl = CreateWindowExW(WS_EX_TRANSPARENT, TRACKBAR_CLASSW, words->volume,
+            WS_CHILD | WS_TABSTOP | TBS_NOTICKS, 0, 0, 0, 0, window, nullptr, module, nullptr);
+        if (!edit || !progress || !volumeControl) return false;
         SendMessageW(edit, EM_SETLIMITTEXT, 512, 0);
         SendMessageW(progress, TBM_SETRANGEMAX, FALSE, 1000);
+        SendMessageW(volumeControl, TBM_SETRANGEMAX, FALSE, 100);
+        SendMessageW(volumeControl, TBM_SETPOS, FALSE, volumeLevel);
         SetWindowSubclass(edit, childProc, 1, reinterpret_cast<DWORD_PTR>(this));
         SetWindowSubclass(progress, childProc, 1, reinterpret_cast<DWORD_PTR>(this));
+        SetWindowSubclass(volumeControl, childProc, 1, reinterpret_cast<DWORD_PTR>(this));
         editBrush = CreateSolidBrush(RGB(36, 31, 38));
         SendMessageW(edit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(words->placeholder));
         server = startServer();
@@ -414,6 +422,12 @@ public:
         }
         resize(pixelWidth, pixelHeight, initialScale);
         return true;
+    }
+    void parameter(size_t index, double value) {
+        if (index != volumeParameter || !std::isfinite(value) || volumeDrag) return;
+        volumeLevel = volumeFromNormalized(value);
+        if (volumeControl) SendMessageW(volumeControl, TBM_SETPOS, FALSE, volumeLevel);
+        if (window) InvalidateRect(window, nullptr, FALSE);
     }
     void resize(int pixelsWide, int pixelsHigh, float factor) {
         scale = std::isfinite(factor) ? std::clamp(factor, .75f, 4.f) : 1.f;
@@ -452,6 +466,7 @@ public:
         words = translated == "bilibili" ? &english : translated == u8"ビリビリ" ? &japanese : &chinese;
         SendMessageW(edit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(words->placeholder));
         SetWindowTextW(progress, words->seek);
+        SetWindowTextW(volumeControl, words->volume);
         homeNameWidth = 0;
         layout();
     }
@@ -483,7 +498,11 @@ private:
             }
         }
         switch (message) {
+        case WM_SETCURSOR:
+            if (hwnd == panel.volumeControl) { SetCursor(LoadCursorW(nullptr, IDC_SIZEALL)); return TRUE; }
+            break;
         case WM_MOUSEMOVE:
+            if (hwnd == panel.volumeControl && GetCapture() == hwnd) panel.moveVolume(l);
             if (hwnd == panel.progress && panel.seeking && GetCapture() == hwnd)
                 panel.previewSeek(GET_X_LPARAM(l));
             panel.pointer(hwnd, message);
@@ -491,6 +510,12 @@ private:
         case WM_MOUSELEAVE: panel.pointer(hwnd, message); break;
         case WM_LBUTTONDOWN:
             panel.keyboard = false;
+            if (hwnd == panel.volumeControl) {
+                SetFocus(hwnd);
+                SetCapture(hwnd);
+                panel.volumeDrag = VolumeDrag{{GET_X_LPARAM(l), GET_Y_LPARAM(l)}, panel.volumeLevel};
+                return 0;
+            }
             if (hwnd == panel.progress) {
                 if (panel.duration > 0) {
                     SetFocus(hwnd);
@@ -502,6 +527,13 @@ private:
             }
             break;
         case WM_LBUTTONUP:
+            if (hwnd == panel.volumeControl) {
+                panel.moveVolume(l);
+                panel.endVolume();
+                if (GetCapture() == hwnd) ReleaseCapture();
+                panel.pointer(hwnd, WM_MOUSELEAVE);
+                return 0;
+            }
             if (hwnd == panel.progress) {
                 if (panel.seeking) {
                     panel.previewSeek(GET_X_LPARAM(l));
@@ -513,9 +545,11 @@ private:
             }
             break;
         case WM_LBUTTONDBLCLK:
+            if (hwnd == panel.volumeControl) { panel.setVolumeOnce(defaultVolume); return 0; }
             if (hwnd == panel.progress) return 0;
             break;
         case WM_CAPTURECHANGED:
+            if (hwnd == panel.volumeControl) panel.endVolume();
             if (hwnd == panel.progress && panel.seeking) {
                 panel.seeking = false;
                 panel.updateThumb();
@@ -544,12 +578,14 @@ private:
         case WM_DRAWITEM: return TRUE;
         case WM_NOTIFY: {
             const auto* notice = reinterpret_cast<NMHDR*>(l);
-            if (notice->hwndFrom == progress && notice->code == NM_CUSTOMDRAW) return CDRF_SKIPDEFAULT;
+            if ((notice->hwndFrom == progress || notice->hwndFrom == volumeControl) &&
+                notice->code == NM_CUSTOMDRAW) return CDRF_SKIPDEFAULT;
             break;
         }
         case WM_CTLCOLORBTN: return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
         case WM_CTLCOLORSTATIC:
-            if (reinterpret_cast<HWND>(l) == progress) return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+            if (reinterpret_cast<HWND>(l) == progress || reinterpret_cast<HWND>(l) == volumeControl)
+                return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
             break;
         case WM_CTLCOLOREDIT:
             SetTextColor(reinterpret_cast<HDC>(w), RGB(245, 239, 244));
@@ -563,6 +599,11 @@ private:
             }
             break;
         case WM_HSCROLL:
+            if (reinterpret_cast<HWND>(l) == volumeControl) {
+                if (!volumeDrag && LOWORD(w) != TB_ENDTRACK)
+                    setVolumeOnce(static_cast<unsigned>(SendMessageW(volumeControl, TBM_GETPOS, 0, 0)));
+                return 0;
+            }
             if (reinterpret_cast<HWND>(l) == progress) {
                 if (!seeking && LOWORD(w) != TB_ENDTRACK) seekFromControl();
                 InvalidateRect(window, nullptr, FALSE);
@@ -608,7 +649,7 @@ private:
         RECT bounds{};
         GetClientRect(window, &bounds);
         const bool inside = PtInRect(&bounds, cursor) != FALSE;
-        if (seeking && GetCapture() == progress) return;
+        if ((seeking && GetCapture() == progress) || (volumeDrag && GetCapture() == volumeControl)) return;
         if (page == Page::player && hovering != inside) {
             hovering = inside;
             if (!inside && !IsChild(window, GetFocus())) keyboard = false;
@@ -620,6 +661,7 @@ private:
         if (IsWindowVisible(edit)) order.push_back(edit);
         for (size_t i = 0; i < usedButtons; ++i) if (IsWindowVisible(buttons[i].hwnd)) order.push_back(buttons[i].hwnd);
         if (IsWindowVisible(progress)) order.push_back(progress);
+        if (IsWindowVisible(volumeControl)) order.push_back(volumeControl);
         if (order.empty()) return;
         const bool prev = GetKeyState(VK_SHIFT) < 0;
         const auto found = std::find(order.begin(), order.end(), current);
@@ -692,7 +734,7 @@ private:
             resultY() + static_cast<float>(index / columns()) * (cardHeight() + 12) - scroll, cardWidth(), cardHeight()};
     }
     void layout() {
-        if (!edit || !progress) return;
+        if (!edit || !progress || !volumeControl) return;
         usedButtons = 0;
         const auto margin = inset();
         if (page == Page::player) {
@@ -704,12 +746,17 @@ private:
                 add(Action::play, {margin, height - 43, 36, 36}, playback == Playback::playing ? words->pause : words->play);
             }
             if (timeWidth == 0) measureTime();
-            timeBox = {width - 12.f - timeWidth, height - toolbarHeight, timeWidth, toolbarHeight};
+            volumeBox = {width - 80.f, height - 43, 68, 36};
+            const float timeSpace = std::max(0.f, volumeBox.x - margin - 72.f);
+            const float timeWidthHere = std::min(timeWidth, timeSpace);
+            timeBox = {volumeBox.x - 8.f - timeWidthHere, height - toolbarHeight, timeWidthHere, toolbarHeight};
             seekBox = {margin + 48, height - 42, std::max(9.f, timeBox.x - 7.f - margin - 48.f), 35};
             place(progress, seekBox, hovering || keyboard);
+            place(volumeControl, volumeBox, hovering || keyboard);
             EnableWindow(progress, duration > 0);
         } else {
             place(progress, {}, false);
+            place(volumeControl, {}, false);
             const float y = startY(), logo = page == Page::home ? 42.f : 31.f;
             const float searchY = y + (page == Page::home ? 66.f : 45.f);
             if (page == Page::home && homeNameWidth == 0) homeNameWidth = textWidth(words->name, 32, true);
@@ -908,6 +955,41 @@ private:
         if (!decoder || !started) { startVideo(); return; }
         decoder->play(playback != Playback::playing);
     }
+    void volumeEvent(int kind) {
+        if (editCallback) editCallback(editContext, kind, volumeParameter, volumeLevel / 100.);
+    }
+    void setVolume(unsigned level) {
+        volumeLevel = level;
+        SendMessageW(volumeControl, TBM_SETPOS, FALSE, volumeLevel);
+        if (!editCallback && audio) audio->volume.store(volumeLevel, std::memory_order_relaxed);
+        volumeEvent(0);
+        InvalidateRect(window, nullptr, FALSE);
+    }
+    void setVolumeOnce(unsigned level) {
+        if (level == volumeLevel) return;
+        volumeEvent(2);
+        setVolume(level);
+        volumeEvent(3);
+    }
+    void moveVolume(LPARAM point) {
+        if (!volumeDrag) return;
+        const int distance = GET_X_LPARAM(point) - volumeDrag->origin.x -
+            (GET_Y_LPARAM(point) - volumeDrag->origin.y);
+        const auto delta = std::lround(distance / (2.f * scale));
+        const auto level = static_cast<unsigned>(std::clamp(static_cast<long>(volumeDrag->level) + delta, 0L, 100L));
+        if (level == volumeLevel) return;
+        if (!volumeDrag->editing) {
+            volumeDrag->editing = true;
+            volumeEvent(2);
+        }
+        setVolume(level);
+    }
+    void endVolume() {
+        if (!volumeDrag) return;
+        const bool editing = volumeDrag->editing;
+        volumeDrag.reset();
+        if (editing) volumeEvent(3);
+    }
     void previewSeek(int mouseX) {
         const auto bounds = pixelBox(seekBox);
         const float logical = (static_cast<float>(bounds.left) + static_cast<float>(mouseX)) / scale - seekBox.x;
@@ -1090,6 +1172,28 @@ private:
         g.FillEllipse(&marker, seekBox.x + seekTravel() * percent, center - thumbRadius, 2 * thumbRadius, 2 * thumbRadius);
         const auto elapsed = seeking ? duration * percent : position;
         label(g, timeText(elapsed) + L" / " + timeText(duration), timeBox, 12, playerInk, false, false, false, StringAlignmentCenter);
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        ScreenToClient(window, &cursor);
+        const bool hot = volumeBox.contains(cursor.x / scale, cursor.y / scale);
+        fill(g, volumeBox, volumeDrag ? playerSelected : hot ? playerHover : playerButton, 9);
+        const float sx = volumeBox.x + 16.f, sy = volumeBox.y + volumeBox.h / 2.f;
+        SolidBrush speaker(playerInk);
+        PointF shape[]{{sx - 7, sy - 3}, {sx - 3, sy - 3}, {sx + 1, sy - 6},
+            {sx + 1, sy + 6}, {sx - 3, sy + 3}, {sx - 7, sy + 3}};
+        g.FillPolygon(&speaker, shape, 6);
+        Pen wave(playerInk, 1.4f);
+        if (volumeLevel) g.DrawArc(&wave, sx - 1, sy - 5, 9.f, 10.f, -58.f, 116.f);
+        else {
+            g.DrawLine(&wave, sx + 4, sy - 2, sx + 8, sy + 2);
+            g.DrawLine(&wave, sx + 4, sy + 2, sx + 8, sy - 2);
+        }
+        label(g, std::to_wstring(volumeLevel) + L"%", {volumeBox.x + 28, volumeBox.y, 37, volumeBox.h},
+            12, playerInk, false, true);
+        if (keyboard && GetFocus() == volumeControl) {
+            Pen ring(playerInk, 1.3f);
+            g.DrawRectangle(&ring, volumeBox.x + 1, volumeBox.y + 1, volumeBox.w - 2, volumeBox.h - 2);
+        }
     }
     void paintButtons(Graphics& g) {
         POINT cursor{};
@@ -1125,16 +1229,17 @@ private:
 extern "C" AUDCORE_FX_EXPORT const AudcoreFxEditor* audcore_fx_get_editor(uint32_t abi) {
     static const AudcoreFxEditor api{
         sizeof api, 1, 720, 540,
-        [](void* parent, const double*, size_t, int32_t width, int32_t height, float scale, AudcoreFxEdit edit, void* context) -> void* {
+        [](void* parent, const double* values, size_t count, int32_t width, int32_t height, float scale, AudcoreFxEdit edit, void* context) -> void* {
             if (!parent) return nullptr;
             try {
                 auto panel = std::make_unique<Panel>(static_cast<HWND>(parent), edit, context);
+                if (values && count > volumeParameter) panel->parameter(volumeParameter, values[volumeParameter]);
                 return panel->start(width, height, scale) ? panel.release() : nullptr;
             } catch (...) { return nullptr; }
         },
         [](void* handle) { delete static_cast<Panel*>(handle); },
         [](void* handle, int32_t width, int32_t height, float scale) { static_cast<Panel*>(handle)->resize(width, height, scale); },
-        [](void*, size_t, double) {},
+        [](void* handle, size_t index, double value) { static_cast<Panel*>(handle)->parameter(index, value); },
         [](void* handle, const float* values, size_t count) { static_cast<Panel*>(handle)->bind(values, count); },
         [](void* handle, AudcoreFxTranslate callback, void* context) { static_cast<Panel*>(handle)->translate(callback, context); }
     };

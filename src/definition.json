@@ -8,7 +8,9 @@
   "sidechain": false,
   "parameters": [
     {"id":"bypass","name":"Bypass","label":{"zh-CN":"旁通","en":"Bypass","ja":"迂回"},
-      "minimum":0,"maximum":1,"step":1,"default":0,"units":"","skew":1,"component":"switch"}
+      "minimum":0,"maximum":1,"step":1,"default":0,"units":"","skew":1,"component":"switch"},
+    {"id":"volume","name":"Volume","label":{"zh-CN":"音量","en":"Volume","ja":"音量"},
+      "minimum":0,"maximum":100,"step":1,"default":50,"units":"%","skew":1,"component":"knob"}
   ],
   "text_parameters": [{"id":"video_id","label":{"zh-CN":"视频编号","en":"Video ID","ja":"動画ID"}},{"id":"video_part","label":{"zh-CN":"分P","en":"Part","ja":"話数"}}],
   "visual": {"component":"none"},

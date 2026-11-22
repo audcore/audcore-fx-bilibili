@@ -45,10 +45,16 @@ void process(void* handle, float* stereo, const float*, uint32_t frames, double)
     audio(handle).mix(stereo, frames);
 }
 float get(void* handle, uint32_t index) {
+    if (index == volumeParameter) return audio(handle).volume.load(std::memory_order_relaxed) / 100.f;
     return index == 0 && audio(handle).bypass.load(std::memory_order_relaxed) ? 1.f : 0.f;
 }
 int set(void* handle, uint32_t index, float normalized) {
-    if (index != 0 || !(normalized >= 0 && normalized <= 1)) return 0;
+    if (!(normalized >= 0 && normalized <= 1)) return 0;
+    if (index == volumeParameter) {
+        audio(handle).volume.store(volumeFromNormalized(normalized), std::memory_order_relaxed);
+        return 1;
+    }
+    if (index != 0) return 0;
     audio(handle).bypass.store(normalized >= .5f, std::memory_order_relaxed);
     audio(handle).reset();
     return 1;
@@ -58,8 +64,8 @@ uint32_t save(void* handle, uint8_t* output, uint32_t room) {
     if (!output) {
         try {
             const auto video = audio(handle).video();
-            state.assign({3, static_cast<char>(get(handle, 0)), static_cast<char>(video.part & 255),
-                static_cast<char>(video.part >> 8)});
+            state.assign({4, static_cast<char>(get(handle, 0)), static_cast<char>(video.part & 255),
+                static_cast<char>(video.part >> 8), static_cast<char>(audio(handle).volume.load(std::memory_order_relaxed))});
             state += video.id;
             return static_cast<uint32_t>(state.size());
         } catch (...) { return 0; }
@@ -70,15 +76,21 @@ uint32_t save(void* handle, uint8_t* output, uint32_t room) {
 }
 int restore(void* handle, const uint8_t* input, uint32_t size) {
     try {
-        if (!size) { audio(handle).select({}); return set(handle, 0, 0); }
+        if (!size) {
+            audio(handle).volume.store(defaultVolume, std::memory_order_relaxed);
+            audio(handle).select({});
+            return set(handle, 0, 0);
+        }
         if (!input || size < 2 || input[1] > 1) return 0;
         const auto version = input[0];
         if ((version == 1 && size != 2) || (version == 2 && size > 23) ||
-            (version == 3 && (size < 4 || size > 25)) || version < 1 || version > 3) return 0;
-        const uint32_t prefix = version == 3 ? 4 : 2;
-        const auto part = static_cast<uint16_t>(version == 3 ? input[2] | (input[3] << 8) : 1);
+            (version == 3 && (size < 4 || size > 25)) ||
+            (version == 4 && (size < 5 || size > 26 || input[4] > 100)) || version < 1 || version > 4) return 0;
+        const uint32_t prefix = version == 4 ? 5 : version == 3 ? 4 : 2;
+        const auto part = static_cast<uint16_t>(version >= 3 ? input[2] | (input[3] << 8) : 1);
         const std::string_view id(reinterpret_cast<const char*>(input + prefix), size - prefix);
         if (part == 0 || part > 9999 || (id.empty() ? part != 1 : !validVideoId(id))) return 0;
+        audio(handle).volume.store(version == 4 ? input[4] : defaultVolume, std::memory_order_relaxed);
         audio(handle).select({std::string(id), part});
         return set(handle, 0, static_cast<float>(input[1]));
     } catch (...) { return 0; }

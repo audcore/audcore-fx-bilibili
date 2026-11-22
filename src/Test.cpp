@@ -89,9 +89,10 @@ bool audioTest(uint32_t rate, uint32_t channels) {
     }
     for (int block = 0; block < 3; ++block) audio.write(decoded.data(), 1024, 2);
     audio.mix(effectChain.data(), 128);
+    const auto gain = std::pow(10.f, -.5f);
     for (size_t index = 0; index < effectChain.size(); index += 2) {
-        if (std::abs(effectChain[index] - (channels == 1 ? .375f : .75f)) > .0001f ||
-            std::abs(effectChain[index + 1] - (channels == 1 ? .375f : 0.f)) > .0001f) return false;
+        if (std::abs(effectChain[index] - (.25f + (channels == 1 ? .125f : .5f) * gain)) > .0001f ||
+            std::abs(effectChain[index + 1] - (.25f + (channels == 1 ? .125f : -.25f) * gain)) > .0001f) return false;
     }
     for (int block = 0; block < 400; ++block) {
         effectChain.fill(.25f);
@@ -102,6 +103,25 @@ bool audioTest(uint32_t rate, uint32_t channels) {
     audio.write(decoded.data(), 1024, 2);
     audio.mix(effectChain.data(), 128);
     return effectChain[0] == .25f && effectChain[1] == .25f;
+}
+
+bool volumeTest() {
+    bilibili::Audio audio;
+    audio.prepare(48000, 2);
+    audio.playing.store(true);
+    std::array<float, 2 * 4096> source;
+    source.fill(.25f);
+    std::array<float, 2 * 512> output;
+    output.fill(.1f);
+    audio.volume.store(100);
+    audio.mix(output.data(), 512);
+    audio.write(source.data(), 4096, 2);
+    audio.mix(output.data(), 512);
+    if (std::abs(output.back() - .35f) > .0001f) return false;
+    audio.volume.store(0);
+    output.fill(.1f);
+    audio.mix(output.data(), 512);
+    return output.front() > .34f && output.front() < .35f && output.back() == .1f;
 }
 }
 
@@ -188,6 +208,11 @@ int main(int argc, char** argv) {
         return 9;
     }
     if (argc == 1) {
+        if (!volumeTest()) {
+            std::cerr << "Source volume changed upstream gain or did not ramp to silence\n";
+            return 14;
+        }
+        std::cout << "Volume preserves upstream audio and ramps to silence\n";
         if (!selectionTest()) {
             std::cerr << "Video selection was not published correctly to open editors\n";
             return 13;

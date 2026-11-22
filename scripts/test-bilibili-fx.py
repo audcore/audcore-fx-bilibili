@@ -72,10 +72,14 @@ def main(path):
         assert not action(instances[0], b"video:invalid")
         assert action(instances[0], b"video:BV1F8yVzKETm:2")
         assert rack.set(instances[0], 0, 1)
+        assert rack.get(instances[0], 1) == 0.5
+        assert rack.set(instances[0], 1, 0.73)
+        assert rack.get(instances[1], 1) == 0.5
         state = (c.c_uint8 * rack.save(instances[0], None, 0))()
         assert rack.save(instances[0], state, len(state)) == len(state)
         assert rack.restore(instances[1], state, len(state))
         assert rack.get(instances[1], 0) == 1
+        assert abs(rack.get(instances[1], 1) - 0.73) < 0.0001
         video_id = c.create_string_buffer(22)
         assert get_text(instances[1], b"video_id", video_id, len(video_id))
         assert video_id.value == b"BV1F8yVzKETm"
@@ -84,8 +88,15 @@ def main(path):
         legacy_id = b"BV1YfJJzVEDF"
         legacy_state = (c.c_uint8 * (2 + len(legacy_id))).from_buffer_copy(bytes([2, 0]) + legacy_id)
         assert rack.restore(instances[1], legacy_state, len(legacy_state))
+        assert rack.get(instances[1], 1) == 0.5
         assert get_text(instances[1], b"video_part", video_id, len(video_id))
         assert video_id.value == b"1"
+        previous_state = (c.c_uint8 * (4 + len(legacy_id))).from_buffer_copy(bytes([3, 0, 2, 0]) + legacy_id)
+        assert rack.set(instances[1], 1, 0.1)
+        assert rack.restore(instances[1], previous_state, len(previous_state))
+        assert rack.get(instances[1], 1) == 0.5
+        assert get_text(instances[1], b"video_part", video_id, len(video_id))
+        assert video_id.value == b"2"
     finally:
         for instance in instances:
             rack.destroy(instance)

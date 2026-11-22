@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cmath>
 #include <functional>
 #include <map>
 #include <memory>
@@ -10,6 +11,18 @@
 #include <string>
 
 namespace bilibili {
+inline constexpr unsigned defaultVolume = 50, volumeParameter = 1;
+inline unsigned volumeFromNormalized(double value) {
+    return static_cast<unsigned>(std::lround(std::clamp(value, 0., 1.) * 100.));
+}
+inline const auto volumeGains = [] {
+    // Half scale maps to -10 dB. Calculate the curve before starting the audio callback.
+    std::array<float, 101> gains{};
+    for (unsigned level = 1; level < gains.size(); ++level)
+        gains[level] = static_cast<float>(std::pow(level / 100., 1.66096404744));
+    return gains;
+}();
+
 struct Selection {
     std::string id;
     uint16_t part = 1;
@@ -24,6 +37,7 @@ class Audio {
     uint32_t appliedFlush = 0;
     double fraction = 0;
     bool primed = false;
+    float gain = volumeGains[defaultVolume];
     uint32_t channels = 2;
     mutable std::mutex selectionMutex;
     Selection selection;
@@ -31,6 +45,7 @@ class Audio {
 
 public:
     std::atomic<uint32_t> rate{0}, sourceRate{48000};
+    std::atomic<uint32_t> volume{defaultVolume};
     std::atomic<bool> bypass{false}, playing{false};
 
     Selection video() const { std::lock_guard<std::mutex> lock(selectionMutex); return selection; }
@@ -87,7 +102,10 @@ public:
         const auto inputRate = sourceRate.load(std::memory_order_relaxed);
         const auto target = inputRate * 64 / 1000;
         if (!sampleRate || !stereo || (!primed && end - cursor < target)) return;
+        const float targetGain = volumeGains[volume.load(std::memory_order_relaxed)];
+        if (!primed) gain = targetGain;
         primed = true;
+        const float gainStep = 100.f / static_cast<float>(sampleRate);
         const auto correction = std::clamp((static_cast<double>(end - cursor) - target) * 0.000004, -0.01, 0.01);
         const auto ratio = static_cast<double>(inputRate) / sampleRate * (1.0 + correction);
         for (uint32_t index = 0; index < frames; ++index) {
@@ -99,8 +117,9 @@ public:
             }
             const auto& a = queue[cursor & mask];
             const auto& b = queue[(cursor + 1) & mask];
-            const float left = a.left + static_cast<float>(fraction) * (b.left - a.left);
-            const float right = a.right + static_cast<float>(fraction) * (b.right - a.right);
+            gain += std::clamp(targetGain - gain, -gainStep, gainStep);
+            const float left = (a.left + static_cast<float>(fraction) * (b.left - a.left)) * gain;
+            const float right = (a.right + static_cast<float>(fraction) * (b.right - a.right)) * gain;
             if (channels == 1) {
                 stereo[2 * index] += (left + right) * .5f;
                 stereo[2 * index + 1] = stereo[2 * index];

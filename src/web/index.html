@@ -50,6 +50,10 @@
     <button id="play" class="icon-button" type="button" aria-label="播放" title="播放"><span class="icon icon-play" aria-hidden="true"></span></button>
     <input id="position" type="range" min="0" max="1" value="0" step="0.01" aria-label="播放进度">
     <output id="time">0:00 / 0:00</output>
+    <div id="volume" class="icon-button" role="slider" tabindex="0" aria-label="音量"
+      aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-valuetext="50%">
+      <span class="icon icon-volume" aria-hidden="true"></span><span id="volume-level" aria-hidden="true">50%</span>
+    </div>
   </footer>
 </section>
 <template id="card">

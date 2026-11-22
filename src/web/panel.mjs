@@ -5,21 +5,21 @@ const video = $('video');
 const chinese = {
   name: '哔哩哔哩', home: '返回首页', search: '搜索', try: '试试', example: '音乐现场', results: '搜索结果',
   more: '加载更多', back: '返回', danmaku: '弹幕', parts: '选集',
-  play: '播放', pause: '暂停', query: '关键词、BV / AV 号或视频链接', seek: '播放进度',
+  play: '播放', pause: '暂停', query: '关键词、BV / AV 号或视频链接', seek: '播放进度', volume: '音量',
   loading: '正在加载…', none: '未找到相关视频', failed: '搜索失败，请重试',
   unavailable: '这个视频暂时无法播放', blocked: '点击播放开始观看'
 };
 const english = {
   name: 'bilibili', home: 'Home', search: 'Search', try: 'Try', example: 'live music', results: 'Results',
   more: 'More', back: 'Back', danmaku: 'Danmaku', parts: 'Parts',
-  play: 'Play', pause: 'Pause', query: 'Keywords, BV / AV, or video URL', seek: 'Playback position',
+  play: 'Play', pause: 'Pause', query: 'Keywords, BV / AV, or video URL', seek: 'Playback position', volume: 'Volume',
   loading: 'Loading…', none: 'No videos found', failed: 'Search failed. Try again.',
   unavailable: 'This video is unavailable', blocked: 'Press Play to watch'
 };
 const japanese = {
   name: 'ビリビリ', home: 'ホーム', search: '検索', try: '例', example: '音楽ライブ', results: '検索結果',
   more: 'もっと見る', back: '戻る', danmaku: '弾幕', parts: '話数',
-  play: '再生', pause: '一時停止', query: 'キーワード、BV / AV、動画URL', seek: '再生位置',
+  play: '再生', pause: '一時停止', query: 'キーワード、BV / AV、動画URL', seek: '再生位置', volume: '音量',
   loading: '読込中…', none: '動画が見つかりません', failed: '検索に失敗しました',
   unavailable: '再生できない動画です', blocked: '再生ボタンを押してください'
 };
@@ -43,6 +43,7 @@ function locale(lang) {
   $('query').setAttribute('aria-label', words.search);
   $('results').setAttribute('aria-label', words.results);
   $('position').setAttribute('aria-label', words.seek);
+  $('volume').setAttribute('aria-label', words.volume);
   $('player').setAttribute('aria-label', words.danmaku);
   $('back').setAttribute('aria-label', words.back);
   $('back').title = words.back;
@@ -314,6 +315,39 @@ $('position').onchange = () => {
   scrubbing = false;
   playbackControls();
 };
+const volumeSlider = $('volume');
+let volume = 50;
+let volumeDrag;
+function setVolume(value) {
+  volume = Math.max(0, Math.min(100, Math.round(value)));
+  video.volume = (volume / 100) ** 1.66096404744;
+  volumeSlider.setAttribute('aria-valuenow', String(volume));
+  volumeSlider.setAttribute('aria-valuetext', volume + '%');
+  $('volume-level').textContent = volume + '%';
+}
+setVolume(volume);
+volumeSlider.addEventListener('pointerdown', event => {
+  if (event.button !== 0 || volumeDrag) return;
+  volumeDrag = {id: event.pointerId, x: event.clientX, y: event.clientY, level: volume};
+  volumeSlider.setPointerCapture(event.pointerId);
+  volumeSlider.setAttribute('data-dragging', '');
+});
+volumeSlider.addEventListener('pointermove', event => {
+  if (event.pointerId !== volumeDrag?.id) return;
+  setVolume(volumeDrag.level + (event.clientX - volumeDrag.x - (event.clientY - volumeDrag.y)) / 2);
+});
+volumeSlider.addEventListener('lostpointercapture', () => {
+  volumeDrag = undefined;
+  volumeSlider.removeAttribute('data-dragging');
+});
+volumeSlider.addEventListener('dblclick', () => setVolume(50));
+volumeSlider.addEventListener('keydown', event => {
+  const changes = {ArrowUp: volume + 1, ArrowRight: volume + 1, ArrowDown: volume - 1,
+    ArrowLeft: volume - 1, Home: 0, End: 100, PageUp: volume + 10, PageDown: volume - 10};
+  if (!Object.hasOwn(changes, event.key)) return;
+  event.preventDefault();
+  setVolume(changes[event.key]);
+});
 function togglePlay() {
   if (video.paused) void startPlayback();
   else video.pause();

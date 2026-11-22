@@ -92,10 +92,13 @@ int main(int argc, char** argv) try {
     IEditController* controller = nullptr;
     check(component->getControllerClassId(controllerId) == kResultOk &&
         factory->createInstance(controllerId, IEditController::iid.toTUID(), reinterpret_cast<void**>(&controller)) == kResultOk &&
-        controller->initialize(nullptr) == kResultOk && controller->getParameterCount() == 1, "Controller lifecycle");
+        controller->initialize(nullptr) == kResultOk && controller->getParameterCount() == 2, "Controller lifecycle");
     ParameterInfo parameter{};
     check(controller->getParameterInfo(0, parameter) == kResultOk &&
         parameter.stepCount == 1 && (parameter.flags & ParameterInfo::kIsBypass), "Host bypass parameter");
+    ParameterInfo volume{};
+    check(controller->getParameterInfo(1, volume) == kResultOk && volume.stepCount == 100 &&
+        controller->getParamNormalized(volume.id) == .5, "Host volume parameter defaults to 50 percent");
     auto* view = controller->createView(ViewType::kEditor);
     ViewRect rect{};
     check(view && view->getSize(&rect) == kResultOk && rect.getWidth() == 720 && rect.getHeight() == 540 &&
@@ -106,18 +109,20 @@ int main(int argc, char** argv) try {
     check(component->getState(&selection) == kResultOk, "Read initial state");
     const std::array<char, 4> signature{'R','A','C','K'};
     const auto chunk = std::search(selection.bytes.begin(), selection.bytes.end(), signature.begin(), signature.end());
-    check(chunk != selection.bytes.end() && selection.bytes.end() - chunk == 12, "Rack state framing");
+    check(chunk != selection.bytes.end() && selection.bytes.end() - chunk == 13, "Rack state framing");
     constexpr char id[] = "BV1B7411m7LV";
     *(chunk + 4) += sizeof(id) - 1;
     *(chunk + 9) = 1;
     *(chunk + 10) = 2;
+    *(chunk + 12) = 73;
     selection.bytes.insert(selection.bytes.end(), id, id + sizeof(id) - 1);
     check(component->setState(&selection) == kResultOk, "Restore video and part");
     Stream saved;
     check(component->getState(&saved) == kResultOk && saved.bytes.size() == selection.bytes.size() &&
-        std::equal(saved.bytes.end() - 16, saved.bytes.end(), selection.bytes.end() - 16),
-        "Persist video ID, part, and bypass in VST3 state");
-    check(controller->setComponentState(&saved) == kResultOk && controller->getParamNormalized(parameter.id) == 1,
+        std::equal(saved.bytes.end() - 17, saved.bytes.end(), selection.bytes.end() - 17),
+        "Persist video ID, part, bypass and volume in VST3 state");
+    check(controller->setComponentState(&saved) == kResultOk && controller->getParamNormalized(parameter.id) == 1 &&
+        controller->getParamNormalized(volume.id) > .7299 && controller->getParamNormalized(volume.id) < .7301,
         "Controller reads host parameter state");
     selection.position = 0;
     selection.bytes.pop_back();

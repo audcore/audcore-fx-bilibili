@@ -77,6 +77,7 @@ h1 { margin: 0; font-size: clamp(24px, 6vw, 36px); letter-spacing: .035em; }
 .player-bar { top: 0; }
 .controls { bottom: 0; }
 #player:hover :is(.player-bar, .controls),
+#player:has(#volume[data-dragging]) .controls,
 #player[data-keyboard]:has(.player-bar :focus-visible, .controls :focus-visible) :is(.player-bar, .controls) {
   opacity: 1; pointer-events: auto;
 }
@@ -122,7 +123,11 @@ video { width: 100%; height: 100%; display: block; object-fit: contain; }
 #player-status { position: absolute; inset: 50% 12px auto; margin: 0; text-align: center; transform: translateY(-50%); pointer-events: none; }
 #player-status:not(:empty) { text-shadow: 0 1px 4px #000; }
 #position { min-width: 0; flex: 1; accent-color: #f5f5f5; }
-#time { flex: none; min-width: var(--time-width, 11ch); text-align: right; font: 12px ui-monospace, monospace; }
+#time { width: var(--time-width, 11ch); min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; text-align: right; font: 12px ui-monospace, monospace; }
+#volume { display: flex; justify-content: center; align-items: center; gap: 6px; width: 68px; touch-action: none; user-select: none; cursor: move; }
+#volume[data-dragging] { background: #515151; }
+.icon-volume { clip-path: polygon(0 33%, 29% 33%, 65% 5%, 65% 95%, 29% 67%, 0 67%, 0 33%, 78% 24%, 92% 33%, 100% 50%, 92% 67%, 78% 76%, 78% 61%, 86% 50%, 78% 39%); }
+#volume-level { width: 4ch; text-align: center; font: 12px ui-monospace, monospace; }
 @media (max-width: 380px) {
   .player-bar, .controls { gap: 5px; }
 }
