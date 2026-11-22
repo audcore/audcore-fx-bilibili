@@ -1,0 +1,18 @@
+{
+  "code": "BILIBILI",
+  "vendor": "声核",
+  "label": {"zh-CN": "哔哩哔哩", "en": "bilibili", "ja": "ビリビリ"},
+  "fuid": "82D2F61FC33949E6812D012C191D5F30",
+  "state": "bilibili-1",
+  "primary": "",
+  "sidechain": false,
+  "parameters": [
+    {"id":"bypass","name":"Bypass","label":{"zh-CN":"旁通","en":"Bypass","ja":"迂回"},
+      "minimum":0,"maximum":1,"step":1,"default":0,"units":"","skew":1,"component":"switch"}
+  ],
+  "text_parameters": [{"id":"video_id","label":{"zh-CN":"视频编号","en":"Video ID","ja":"動画ID"}}],
+  "visual": {"component":"none"},
+  "groups": [],
+  "actions": []
+}
+

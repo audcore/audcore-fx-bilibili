@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>哔哩哔哩</title>
+<link rel="stylesheet" href="panel.css">
+<script type="module" src="panel.mjs"></script>
+</head>
+<body>
+<main id="browse" data-page="search">
+  <div class="search-area">
+    <header class="brand">
+      <span class="mark" aria-hidden="true">▶</span>
+      <h1 data-text="name">哔哩哔哩</h1>
+    </header>
+    <form id="search">
+      <input id="query" type="search" required maxlength="512" aria-label="搜索视频" placeholder="关键词、BV / AV 号或视频链接" autocomplete="off">
+      <button type="submit" data-text="search">搜索</button>
+    </form>
+    <div class="examples">
+      <span data-text="try">试试</span>
+      <button type="button" id="example-search" data-text="example">音乐现场</button>
+      <button type="button" id="example-video">BV1B7411m7LV</button>
+    </div>
+  </div>
+  <section id="results" hidden aria-labelledby="results-title">
+    <div class="results-heading">
+      <h2 id="results-title" data-text="results">搜索结果</h2>
+      <p id="status" role="status"></p>
+    </div>
+    <ul id="cards"></ul>
+    <button type="button" id="more" hidden data-text="more">加载更多</button>
+  </section>
+</main>
+<section id="player" hidden aria-label="弹幕播放器">
+  <header class="player-bar">
+    <button type="button" id="back" aria-label="返回"><span aria-hidden="true">←</span><span data-text="back">返回</span></button>
+    <strong id="video-title"></strong>
+    <label class="danmaku-toggle"><input id="danmaku" type="checkbox" checked><span data-text="danmaku">弹幕</span></label>
+    <button type="button" id="fullscreen" data-text="fullscreen">全屏</button>
+  </header>
+  <div class="screen">
+    <video id="video" playsinline preload="metadata"></video>
+    <canvas id="picture" hidden></canvas>
+    <div id="danmaku-layer" aria-hidden="true"></div>
+    <p id="player-status" role="status"></p>
+  </div>
+  <footer class="controls">
+    <button id="play" type="button" data-text="play">播放</button>
+    <input id="position" type="range" min="0" max="1" value="0" step="0.01" aria-label="播放进度">
+    <output id="time">0:00 / 0:00</output>
+  </footer>
+</section>
+<template id="card">
+  <li><a class="card" href="#">
+    <div class="cover"><img alt="" loading="lazy"><span class="duration"></span></div>
+    <div class="card-detail"><strong></strong><span class="meta"></span></div>
+  </a></li>
+</template>
+</body>
+</html>
+
