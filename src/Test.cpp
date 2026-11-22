@@ -75,9 +75,11 @@ int main(int argc, char** argv) {
         std::array<float, 256> pcm{};
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
         bool picture = false, audible = false;
+        double duration = 0;
         while (std::chrono::steady_clock::now() < deadline && !(picture && audible)) {
             const auto update = player.take();
             if (update.state == bilibili::Playback::failed) return 4;
+            duration = update.duration;
             picture |= update.frame && !update.frame->nv12.empty() &&
                 update.frame->bgra.size() == static_cast<size_t>(update.frame->width) * update.frame->height * 4 &&
                 update.frame->bgra[3] == 255;
@@ -88,7 +90,28 @@ int main(int argc, char** argv) {
         }
         if (!picture || !audible) return 5;
         std::cout << "Media Foundation produced D3D11 NV12 video and audible PCM in the rack mixer\n";
-        return 0;
+
+        if (duration <= 25) return 6;
+        const double target = duration * .75;
+        const auto revision = player.seek(target);
+        deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto update = player.take();
+            if (update.seekRevision == revision) {
+                if (update.state == bilibili::Playback::failed) return 7;
+                if (update.frame) {
+                    const double frameTime = static_cast<double>(update.frame->timestamp) / 1000000;
+                    if (std::abs(frameTime - target) > .3 || std::abs(update.position - target) > .3) {
+                        std::cerr << "Seek target " << target << ", frame " << frameTime << ", position " << update.position << '\n';
+                        return 8;
+                    }
+                    std::cout << "Media Foundation sought to a new range without advancing during preroll\n";
+                    return 0;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(4));
+        }
+        return 9;
     }
     if (argc == 1) {
         for (const auto rate : {16000u, 44100u, 48000u, 96000u, 192000u}) {

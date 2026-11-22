@@ -9,6 +9,7 @@
 </head>
 <body>
 <main id="browse" data-page="search">
+  <a id="version" href="https://audcore.utae.cn/bilibili/" target="_blank" rel="noopener">v<!-- BILIBILI_VERSION --></a>
   <div class="search-area">
     <header class="brand">
       <button type="button" id="home" class="mark" aria-label="返回首页" title="返回首页"><span aria-hidden="true">▶</span></button>
@@ -33,12 +34,12 @@
 <section id="player" hidden aria-label="弹幕播放器">
   <header class="player-bar">
     <button type="button" id="back" class="icon-button" aria-label="返回" title="返回"><span class="icon icon-back" aria-hidden="true"></span></button>
+    <strong id="video-title"></strong>
     <label class="icon-button danmaku-toggle" title="弹幕"><input id="danmaku" type="checkbox" checked aria-label="弹幕"><span class="icon icon-danmaku" aria-hidden="true"></span></label>
     <details id="parts" hidden>
       <summary class="icon-button" aria-label="选集" title="选集"><span class="icon icon-parts" aria-hidden="true"></span></summary>
       <ul id="part-list"></ul>
     </details>
-    <strong id="video-title"></strong>
   </header>
   <div class="screen">
     <video id="video" playsinline preload="metadata"></video>

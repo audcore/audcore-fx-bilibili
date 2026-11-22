@@ -22,6 +22,7 @@ struct PlaybackUpdate {
     double position = 0, duration = 0;
     long error = 0;
     std::shared_ptr<const VideoFrame> frame;
+    uint64_t seekRevision = 0;
 };
 
 class Decoder {
@@ -36,7 +37,7 @@ public:
     void load(uint32_t id, std::wstring url, double start, std::shared_ptr<Audio> audio);
     void clear();
     void play(bool enabled);
-    void seek(double seconds);
+    uint64_t seek(double seconds);
     PlaybackUpdate take();
 };
 

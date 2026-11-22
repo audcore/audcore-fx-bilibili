@@ -277,8 +277,8 @@ struct Decoder::State {
 
     void publish(PlaybackUpdate update) {
         std::lock_guard<std::mutex> lock(mutex);
-        if (wanted.stop || update.id != wanted.id) return;
-        if (!update.frame && latest.id == update.id) update.frame = std::move(latest.frame);
+        if (wanted.stop || update.id != wanted.id || update.seekRevision != wanted.seek) return;
+        if (!update.frame && latest.id == update.id && latest.seekRevision == update.seekRevision) update.frame = std::move(latest.frame);
         latest = std::move(update);
         if (!posted) { posted = true; notify(); }
     }
@@ -315,11 +315,12 @@ struct Decoder::State {
         auto updateTime = origin;
         bool playing = false;
         bool shown = false;
+        bool primingSeek = false;
         bool ended = false;
         bool firstVideoEnded = false;
         bool firstAudioEnded = false;
         auto status = [&](Playback value, HRESULT error = S_OK, std::shared_ptr<const VideoFrame> frame = {}) {
-            publish({active.id, value, position, file ? file->duration : 0, error, std::move(frame)});
+            publish({active.id, value, position, file ? file->duration : 0, error, std::move(frame), active.seek});
         };
         auto fail = [&](HRESULT error) {
             setPlaying(active.audio, false);
@@ -328,7 +329,7 @@ struct Decoder::State {
             file.reset();
         };
         auto updatePosition = [&] {
-            if (!playing) return;
+            if (!playing || primingSeek) return;
             position = std::max(seekTo, std::chrono::duration<double>(Clock::now() - origin).count());
             if (file->duration > 0) position = std::min(position, file->duration);
         };
@@ -341,7 +342,7 @@ struct Decoder::State {
                 active = incoming;
                 file.reset();
                 sample = {};
-                shown = ended = playing = firstVideoEnded = firstAudioEnded = false;
+                shown = ended = playing = firstVideoEnded = firstAudioEnded = primingSeek = false;
                 position = seekTo = active.position;
                 if (active.url.empty()) { status(Playback::idle); wait(active.version); continue; }
                 status(Playback::loading);
@@ -367,6 +368,7 @@ struct Decoder::State {
                 position = seekTo = std::clamp(target, 0., file->duration > 0 ? std::max(0., file->duration - .05) : target);
                 const auto result = file->seek(seekTo);
                 active = incoming;
+                primingSeek = true;
                 if (FAILED(result)) { fail(result); continue; }
                 playing = shown = ended = firstVideoEnded = firstAudioEnded = false;
                 sample = {};
@@ -407,7 +409,7 @@ struct Decoder::State {
             updatePosition();
             const auto timestamp = static_cast<double>(sample.timestamp) / ticks;
             const auto lead = sample.video ? 0.01 : 0.098;
-            if (playing && timestamp > position + lead) {
+            if (playing && !primingSeek && timestamp > position + lead) {
                 const auto delay = std::chrono::duration<double>(std::min(.05, timestamp - position - lead));
                 if (wait(active.version, std::chrono::duration_cast<Clock::duration>(delay))) continue;
                 if (Clock::now() - updateTime > std::chrono::milliseconds(120)) {
@@ -423,6 +425,12 @@ struct Decoder::State {
                     result = file->frame(sample, *frame);
                     if (SUCCEEDED(result)) {
                         drawPixels(*frame);
+                        if (primingSeek) {
+                            // Network reads and keyframe preroll are outside playback time.
+                            position = std::max(seekTo, timestamp);
+                            origin = Clock::now() - std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(position));
+                            primingSeek = false;
+                        }
                         shown = true;
                         status(playing ? Playback::playing : Playback::paused, S_OK, std::move(frame));
                     }
@@ -443,7 +451,7 @@ Decoder::Decoder(std::function<void()> notify) : state(std::make_shared<State>(s
         catch (...) {
             const auto active = worker->request();
             setPlaying(active.audio, false);
-            worker->publish({active.id, Playback::failed, 0, 0, E_FAIL, {}});
+            worker->publish({active.id, Playback::failed, 0, 0, E_FAIL, {}, active.seek});
         }
     }).detach();
 }
@@ -454,6 +462,7 @@ void Decoder::load(uint32_t id, std::wstring url, double position, std::shared_p
     state->edit([&](Request& request) {
         setPlaying(request.audio, false);
         ++request.file;
+        request.seek = 0;
         request.id = id;
         request.url = std::move(url);
         request.position = position;
@@ -468,12 +477,14 @@ void Decoder::play(bool enabled) {
         if (!enabled) setPlaying(request.audio, false);
     });
 }
-void Decoder::seek(double position) {
+uint64_t Decoder::seek(double position) {
+    uint64_t revision = 0;
     state->edit([&](Request& request) {
-        ++request.seek;
+        revision = ++request.seek;
         request.position = position;
         setPlaying(request.audio, false);
     });
+    return revision;
 }
 PlaybackUpdate Decoder::take() {
     std::lock_guard<std::mutex> lock(state->mutex);

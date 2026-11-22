@@ -4,6 +4,8 @@ import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 
 const panel = new URL('../src/web/', import.meta.url);
+const cmake = await readFile(new URL('../CMakeLists.txt', import.meta.url), 'utf8');
+const [, version] = cmake.match(/project\(BilibiliFx VERSION (\d+\.\d+\.\d+) /);
 const files = new Map([
   ['', ['index.html', 'text/html']], ['panel.css', ['panel.css', 'text/css']],
   ...['panel.mjs', 'routes.mjs'].map(name => [name, [name, 'text/javascript']]),
@@ -38,7 +40,8 @@ createServer(async (request, response) => {
     if (files.has(name)) {
       const [file, mime] = files.get(name);
       response.setHeader('Content-Type', mime + '; charset=utf-8');
-      response.end(await readFile(new URL(file, panel)));
+      const content = await readFile(new URL(file, panel), 'utf8');
+      response.end(file === 'index.html' ? content.replace('<!-- BILIBILI_VERSION -->', version) : content);
       return;
     }
     const kind = name.startsWith('api/') && name.slice(4);

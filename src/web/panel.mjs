@@ -290,7 +290,10 @@ function playbackControls() {
   $('position').max = length || 1;
   $('position').disabled = !length;
   if (!scrubbing) $('position').value = video.currentTime;
-  $('time').value = formatTime(scrubbing ? Number($('position').value) : video.currentTime) + ' / ' + formatTime(length);
+  const time = $('time');
+  const totalText = formatTime(length);
+  time.style.setProperty('--time-width', `${2 * totalText.length + 3}ch`);
+  time.value = formatTime(scrubbing ? Number($('position').value) : video.currentTime) + ' / ' + totalText;
 }
 $('position').oninput = () => { scrubbing = true; playbackControls(); };
 $('position').onchange = () => {

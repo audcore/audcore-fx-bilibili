@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(BilibiliFx VERSION 0.2.0 LANGUAGES CXX RC)
+project(BilibiliFx VERSION 0.2.1 LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
@@ -27,7 +27,7 @@ target_compile_definitions(BILIBILILocalFx PRIVATE AUDCORE_FX_EXPORTS AUDCORE_FX
 target_compile_options(BILIBILILocalFx PRIVATE /utf-8 /W4 /Gy /Gw /Zc:inline /experimental:deterministic
  "/pathmap:${CMAKE_CURRENT_SOURCE_DIR}=bilibili")
 target_link_options(BILIBILILocalFx PRIVATE /OPT:REF /OPT:ICF /INCREMENTAL:NO /DEBUG:NONE)
-target_link_libraries(BILIBILILocalFx PRIVATE ole32 user32 gdi32 gdiplus comctl32 ws2_32 winhttp bcrypt mfplat mfreadwrite mfuuid d3d11 dxgi windowscodecs shlwapi xmllite)
+target_link_libraries(BILIBILILocalFx PRIVATE ole32 user32 gdi32 gdiplus comctl32 ws2_32 winhttp bcrypt mfplat mfreadwrite mfuuid d3d11 dxgi windowscodecs shell32 shlwapi xmllite)
 set_target_properties(BILIBILILocalFx PROPERTIES PREFIX "" SUFFIX ".fx.audcore" OUTPUT_NAME "bilibili-v${PROJECT_VERSION}"
  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
  RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_BINARY_DIR}/package"
