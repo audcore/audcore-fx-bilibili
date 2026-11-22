@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <objbase.h>
+#include <ole2.h>
 #include <commctrl.h>
 #include <shellapi.h>
 #include <gdiplus.h>
@@ -18,13 +19,14 @@
 #include <list>
 #include <mutex>
 #include <thread>
+#include <wrl.h>
 
 namespace {
 using namespace bilibili;
 using namespace Gdiplus;
 using Clock = std::chrono::steady_clock;
 constexpr wchar_t windowClass[] = L"Audcore.Bilibili.Panel.2";
-constexpr UINT taskReady = WM_APP + 70, videoReady = WM_APP + 71;
+constexpr UINT taskReady = WM_APP + 70, videoReady = WM_APP + 71, selectionReady = WM_APP + 72;
 constexpr wchar_t demo[] = L"BV1YfJJzVEDF", demoTitle[] = L"《武装乙女》";
 constexpr wchar_t version[] = L"v" BILIBILI_VERSION;
 constexpr wchar_t purchaseUrl[] = L"https://audcore.utae.cn/bilibili/";
@@ -245,6 +247,66 @@ std::wstring timeText(double seconds) {
     return std::to_wstring(value / 60) + L":" + (value % 60 < 10 ? L"0" : L"") + std::to_wstring(value % 60);
 }
 
+class VideoDropTarget final : public Microsoft::WRL::RuntimeClass<
+    Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>, IDropTarget> {
+    std::function<void(const Target&)> open;
+    bool accepted = false;
+
+    static std::optional<Target> read(IDataObject* data) {
+        struct Medium {
+            STGMEDIUM value{};
+            ~Medium() { if (value.tymed) ReleaseStgMedium(&value); }
+        };
+        struct LockedText {
+            HGLOBAL memory;
+            const wchar_t* text = static_cast<const wchar_t*>(GlobalLock(memory));
+            ~LockedText() { if (text) GlobalUnlock(memory); }
+        };
+        if (!data) return {};
+        for (const auto format : {RegisterClipboardFormatW(L"UniformResourceLocatorW"), UINT{CF_UNICODETEXT}}) {
+            if (!format) continue;
+            FORMATETC request{static_cast<CLIPFORMAT>(format), nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+            Medium medium;
+            if (FAILED(data->GetData(&request, &medium.value)) || medium.value.tymed != TYMED_HGLOBAL) continue;
+            const auto size = GlobalSize(medium.value.hGlobal) / sizeof(wchar_t);
+            if (!size || size > 4097) continue;
+            const LockedText locked{medium.value.hGlobal};
+            if (!locked.text) continue;
+            const std::wstring_view text(locked.text, size);
+            const auto end = text.find(L'\0');
+            if (end != text.npos)
+                if (auto result = parseTarget(text.substr(0, end))) return result;
+        }
+        return {};
+    }
+
+    static void effect(DWORD* allowed, bool valid) {
+        if (allowed) *allowed = !valid ? DROPEFFECT_NONE :
+            (*allowed & DROPEFFECT_COPY) ? DROPEFFECT_COPY : (*allowed & DROPEFFECT_LINK);
+    }
+public:
+    explicit VideoDropTarget(std::function<void(const Target&)> action) : open(std::move(action)) {}
+    IFACEMETHODIMP DragEnter(IDataObject* data, DWORD, POINTL, DWORD* allowed) noexcept override {
+        try { accepted = read(data).has_value(); } catch (...) { accepted = false; }
+        effect(allowed, accepted);
+        return S_OK;
+    }
+    IFACEMETHODIMP DragOver(DWORD, POINTL, DWORD* allowed) noexcept override {
+        effect(allowed, accepted);
+        return S_OK;
+    }
+    IFACEMETHODIMP DragLeave() noexcept override { accepted = false; return S_OK; }
+    IFACEMETHODIMP Drop(IDataObject* data, DWORD, POINTL, DWORD* allowed) noexcept override {
+        accepted = false;
+        try {
+            const auto target = read(data);
+            effect(allowed, target.has_value());
+            if (allowed && *allowed != DROPEFFECT_NONE) open(*target);
+        } catch (...) { effect(allowed, false); }
+        return S_OK;
+    }
+};
+
 class Panel {
     struct Button {
         HWND hwnd = nullptr;
@@ -267,6 +329,7 @@ class Panel {
     std::shared_ptr<Requests> requests;
     std::unique_ptr<Decoder> decoder;
     std::shared_ptr<Audio> audio;
+    bool oleInitialized = false, dropRegistered = false;
     const Words* words = &chinese;
     Page page = Page::home, returnPage = Page::home;
     std::wstring query, title;
@@ -298,6 +361,8 @@ class Panel {
 public:
     Panel(HWND parentWindow, AudcoreFxEdit callback, void* context) : parent(parentWindow), editCallback(callback), editContext(context) {}
     ~Panel() {
+        if (dropRegistered) RevokeDragDrop(window);
+        if (audio) audio->unwatchSelection(this);
         if (requests) requests->stop();
         decoder.reset();
         if (server) stopServer(*server);
@@ -306,6 +371,7 @@ public:
         if (editBrush) DeleteObject(editBrush);
         buffer.reset();
         if (gdiplus) GdiplusShutdown(gdiplus);
+        if (oleInitialized) OleUninitialize();
     }
 
     bool start(int pixelWidth, int pixelHeight, float initialScale) {
@@ -341,6 +407,11 @@ public:
         if (!server) return false;
         requests = std::make_shared<Requests>(window, reinterpret_cast<WPARAM>(this), panelUrl(*server));
         requests->start();
+        oleInitialized = SUCCEEDED(OleInitialize(nullptr));
+        if (oleInitialized) {
+            const auto drop = Microsoft::WRL::Make<VideoDropTarget>([this](const Target& target) { open(target); });
+            dropRegistered = drop && SUCCEEDED(RegisterDragDrop(window, drop.Get()));
+        }
         resize(pixelWidth, pixelHeight, initialScale);
         return true;
     }
@@ -362,10 +433,13 @@ public:
         if (!values || count != 3) return;
         const uint32_t id = (static_cast<uint32_t>(values[0]) << 16) | static_cast<uint32_t>(values[1]);
         if (auto next = audioFor(id); next != audio) {
+            if (audio) audio->unwatchSelection(this);
             audio = std::move(next);
-            if (audio && page == Page::home) {
-                const auto video = audio->video();
-                if (!video.id.empty()) open({std::wstring(video.id.begin(), video.id.end()), video.part, 0});
+            if (audio) {
+                const auto hwnd = window;
+                const auto key = reinterpret_cast<WPARAM>(this);
+                const auto video = audio->watchSelection(this, [hwnd, key] { PostMessageW(hwnd, selectionReady, key, 0); });
+                if (page == Page::home) openSelection(video);
             }
         }
         startVideo();
@@ -514,6 +588,9 @@ private:
             return 0;
         case videoReady:
             if (decoder && w == reinterpret_cast<WPARAM>(this)) updateVideo(decoder->take());
+            return 0;
+        case selectionReady:
+            if (audio && w == reinterpret_cast<WPARAM>(this)) openSelection(audio->video());
             return 0;
         }
         return DefWindowProcW(hwnd, message, w, l);
@@ -700,7 +777,8 @@ private:
         layout();
         SetFocus(edit);
     }
-    void open(const Target& value) {
+    void open(const Target& value, bool saveSelection = true) {
+        if (saveSelection) remember(value);
         if (page != Page::player) returnPage = page;
         if (decoder) decoder->clear();
         requests->reset(++generation);
@@ -724,6 +802,18 @@ private:
         SetFocus(window);
         pointer(window, WM_MOUSELEAVE);
         layout();
+    }
+    void openSelection(const Selection& video) {
+        if (video.id.empty()) return;
+        const std::wstring id(video.id.begin(), video.id.end());
+        if (page != Page::player || target.id != id || target.part != video.part || playback == Playback::failed)
+            open({id, video.part, 0}, false);
+    }
+    void remember(const Target& video) {
+        if (!audio) return;
+        Selection value{{}, video.part};
+        for (const auto character : video.id) value.id.push_back(static_cast<char>(character));
+        if (audio->select(std::move(value), this) && editCallback) editCallback(editContext, 11, 0, 0);
     }
     void back() {
         requests->reset(++generation);
@@ -804,9 +894,6 @@ private:
         if (!currentVideo || started || page != Page::player) return;
         if (!audio || !audio->rate.load(std::memory_order_acquire)) { status = words->audio; layout(); return; }
         const auto& video = *currentVideo;
-        Selection value{{}, video.target.part};
-        for (const auto character : video.target.id) value.id.push_back(static_cast<char>(character));
-        if (audio->select(std::move(value)) && editCallback) editCallback(editContext, 11, 0, 0);
         if (!decoder) {
             const auto hwnd = window;
             const auto key = reinterpret_cast<WPARAM>(this);

@@ -3,6 +3,8 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -25,17 +27,31 @@ class Audio {
     uint32_t channels = 2;
     mutable std::mutex selectionMutex;
     Selection selection;
+    std::map<const void*, std::function<void()>> selectionListeners;
 
 public:
     std::atomic<uint32_t> rate{0}, sourceRate{48000};
     std::atomic<bool> bypass{false}, playing{false};
 
     Selection video() const { std::lock_guard<std::mutex> lock(selectionMutex); return selection; }
-    bool select(Selection value) {
+    Selection watchSelection(const void* owner, std::function<void()> notify) {
         std::lock_guard<std::mutex> lock(selectionMutex);
-        if (selection == value) return false;
-        selection = std::move(value);
-        return true;
+        selectionListeners.insert_or_assign(owner, std::move(notify));
+        return selection;
+    }
+    void unwatchSelection(const void* owner) {
+        std::lock_guard<std::mutex> lock(selectionMutex);
+        selectionListeners.erase(owner);
+    }
+    // Only controller and editor threads change the selection. Listeners enqueue a message.
+    bool select(Selection value, const void* source = nullptr, bool notifyUnchanged = false) {
+        std::lock_guard<std::mutex> lock(selectionMutex);
+        const bool changed = !(selection == value);
+        if (changed) selection = std::move(value);
+        if (changed || notifyUnchanged)
+            for (const auto& [owner, notify] : selectionListeners)
+                if (owner != source) notify();
+        return changed;
     }
 
     void reset() noexcept { flush.fetch_add(1, std::memory_order_release); }

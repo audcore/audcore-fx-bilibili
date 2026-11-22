@@ -95,6 +95,19 @@ $('example-search').onclick = () => submit(words.example);
 $('example-video').onclick = () => submit($('example-video').dataset.video);
 window.addEventListener('popstate', render);
 
+window.addEventListener('dragover', event => {
+  if (['text/uri-list', 'text/plain'].some(type => event.dataTransfer.types.includes(type))) event.preventDefault();
+});
+window.addEventListener('drop', event => {
+  const transfer = event.dataTransfer;
+  if (!['text/uri-list', 'text/plain'].some(type => transfer.types.includes(type))) return;
+  event.preventDefault();
+  for (const input of [...transfer.getData('text/uri-list').split(/\r?\n/), transfer.getData('text/plain')]) {
+    const route = parseVideo(input);
+    if (route) { open(route); return; }
+  }
+});
+
 function titleText(title) {
   const doc = new DOMParser().parseFromString(String(title || ''), 'text/html');
   return doc.body.textContent || '';

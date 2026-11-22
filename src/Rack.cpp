@@ -136,7 +136,7 @@ extern "C" AUDCORE_FX_EXPORT int audcore_fx_rack_action(void* handle, const char
             }
             if (part == 0) return 0;
         }
-        audio(handle).select({std::string(id), part});
+        audio(handle).select({std::string(id), part}, nullptr, true);
         return 1;
     } catch (...) { return 0; }
 }

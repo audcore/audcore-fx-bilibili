@@ -12,6 +12,19 @@
 #include <iostream>
 
 namespace {
+bool selectionTest() {
+    bilibili::Audio audio;
+    unsigned first = 0, second = 0;
+    const bilibili::Selection target{"BV1F8yVzKETm", 2};
+    if (!audio.watchSelection(&first, [&] { ++first; }).id.empty()) return false;
+    if (!audio.select(target, &first) || first != 0) return false;
+    if (!(audio.watchSelection(&second, [&] { ++second; }) == target)) return false;
+    if (audio.select(target, nullptr, true) || first != 1 || second != 1) return false;
+    audio.unwatchSelection(&first);
+    if (!audio.select({"AV98647868", 1}) || first != 1 || second != 2) return false;
+    return true;
+}
+
 bool frameCropTest() {
     constexpr size_t pitch = 12;
     constexpr unsigned surfaceHeight = 8;
@@ -175,6 +188,11 @@ int main(int argc, char** argv) {
         return 9;
     }
     if (argc == 1) {
+        if (!selectionTest()) {
+            std::cerr << "Video selection was not published correctly to open editors\n";
+            return 13;
+        }
+        std::cout << "Video selection reaches open editors and unsubscribes on close\n";
         if (!frameCropTest()) {
             std::cerr << "NV12 picture crop includes padding or samples the wrong chroma cells\n";
             return 11;
