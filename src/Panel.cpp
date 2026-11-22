@@ -2,6 +2,7 @@
 #include "Audio.h"
 #include "Decoder.h"
 #include "Server.h"
+#include "Text.h"
 #include "audcore_fx.h"
 #include "audcore_fx_editor.h"
 #include <windows.h>
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <list>
 #include <mutex>
 #include <thread>
 
@@ -248,6 +250,11 @@ class Panel {
         std::wstring name;
     };
     struct RunningComment { size_t index; unsigned lane; double time; };
+    struct TextEntry {
+        std::wstring value;
+        TextStyle style;
+        TextPixels pixels;
+    };
 
     HWND parent, window = nullptr, edit = nullptr, progress = nullptr;
     AudcoreFxEdit editCallback;
@@ -268,6 +275,8 @@ class Panel {
     std::vector<Button> buttons;
     std::shared_ptr<const VideoFrame> frame;
     std::unique_ptr<Bitmap> buffer;
+    std::list<TextEntry> textCache;
+    size_t cachedTextBytes = 0;
     HFONT editFont = nullptr;
     HBRUSH editBrush = nullptr;
     ULONG_PTR gdiplus = 0;
@@ -848,6 +857,36 @@ private:
         nextComment = static_cast<size_t>(std::lower_bound(comments.begin(), comments.end(), now,
             [](const Comment& comment, double seconds) { return comment.time < seconds; }) - comments.begin());
     }
+    void videoText(Graphics& g, std::wstring_view value, Box box, float size, Color color,
+        bool bold = false, bool wrap = false, bool center = false) {
+        if (value.empty() || box.w < 1 || box.h < 1) return;
+        const TextStyle style{static_cast<unsigned>(std::ceil(box.w * scale)),
+            static_cast<unsigned>(std::ceil(box.h * scale)), size * scale, color.GetValue(), bold, wrap, center};
+        const auto existing = std::find_if(textCache.begin(), textCache.end(), [&](const auto& entry) {
+            return entry.style == style && entry.value == value;
+        });
+        if (existing != textCache.end()) textCache.splice(textCache.begin(), textCache, existing);
+        else {
+            auto pixels = rasterizeText(value, style);
+            while (!textCache.empty() && (textCache.size() >= 96 ||
+                cachedTextBytes + pixels.bytes.size() > 12 * 1024 * 1024)) {
+                cachedTextBytes -= textCache.back().pixels.bytes.size();
+                textCache.pop_back();
+            }
+            cachedTextBytes += pixels.bytes.size();
+            textCache.push_front({std::wstring(value), style, std::move(pixels)});
+        }
+        auto& pixels = textCache.front().pixels;
+        if (pixels.bytes.empty()) {
+            label(g, value, box, size, color, bold, false, wrap, center ? StringAlignmentCenter : StringAlignmentNear);
+            return;
+        }
+        Bitmap bitmap(style.width, style.height, style.width * 4, PixelFormat32bppPARGB, pixels.bytes.data());
+        const auto saved = g.Save();
+        g.SetClip(box.rect(), CombineModeIntersect);
+        g.DrawImage(&bitmap, RectF(box.x, box.y + pixels.offsetY / scale, style.width / scale, style.height / scale));
+        g.Restore(saved);
+    }
     void paintComments(Graphics& g) {
         if (!dm) return;
         const unsigned lanes = static_cast<unsigned>(std::clamp(height * .45f / 26, 1.f, 10.f));
@@ -874,8 +913,8 @@ private:
             const float x = comment.mode == 1 ? width - offset * (width + length) : (width - length) / 2;
             const float lane = static_cast<float>(item.lane);
             const float y = comment.mode == 4 ? height - 32 - lane * 26 : 6 + lane * 26;
-            label(g, comment.text, {x + 1, y + 1, length, 26}, 19, dark, true);
-            label(g, comment.text, {x, y, length, 26}, 19, Color(0xff000000u | comment.color), true);
+            videoText(g, comment.text, {x + 1, y + 1, length, 26}, 19, dark, true);
+            videoText(g, comment.text, {x, y, length, 26}, 19, Color(0xff000000u | comment.color), true);
         }
     }
     void paint(HWND hwnd) {
@@ -898,6 +937,13 @@ private:
                 paintButtons(g);
             }
             Graphics output(dc);
+            if (edit && IsWindowVisible(edit)) {
+                // The native EDIT owns this rectangle, including its cue banner and IME text.
+                RECT input{};
+                GetWindowRect(edit, &input);
+                MapWindowPoints(HWND_DESKTOP, hwnd, reinterpret_cast<POINT*>(&input), 2);
+                output.ExcludeClip(Rect(input.left, input.top, input.right - input.left, input.bottom - input.top));
+            }
             output.DrawImage(buffer.get(), 0, 0, bounds.right, bounds.bottom);
         }
         EndPaint(hwnd, &state);
@@ -927,8 +973,8 @@ private:
                 fill(g, stamp, toolbar, 5);
                 label(g, row.duration, stamp, 11, ink, false, true);
             }
-            label(g, row.title, {rect.x + 10, cover.y + cover.h + 7, rect.w - 20, 38}, 14, ink, true, false, true);
-            label(g, row.author, {rect.x + 10, rect.y + rect.h - 21, rect.w - 20, 18}, 12, quiet);
+            videoText(g, row.title, {rect.x + 10, cover.y + cover.h + 7, rect.w - 20, 38}, 14, ink, true, true);
+            videoText(g, row.author, {rect.x + 10, rect.y + rect.h - 21, rect.w - 20, 18}, 12, quiet);
         }
         g.Restore(saved);
     }
@@ -943,7 +989,7 @@ private:
         const float x = margin + 47.f;
         const float titleWidth = rightControlsX() - 11.f - x;
         if (titleWidth > 0)
-            label(g, title, {x, 0, titleWidth, toolbarHeight}, 14, playerInk, true, false, false, StringAlignmentCenter);
+            videoText(g, title, {x, 0, titleWidth, toolbarHeight}, 14, playerInk, true, false, true);
         const float percent = std::clamp(static_cast<float>(SendMessageW(progress, TBM_GETPOS, 0, 0)) / 1000.f, 0.f, 1.f);
         const float center = seekBox.y + seekBox.h / 2;
         fill(g, {seekBox.x + thumbRadius, center - 2, seekTravel(), 4}, playerSelected, 2);

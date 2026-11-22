@@ -5,12 +5,35 @@
 #include "Decoder.h"
 #include <string_view>
 #include "Server.h"
+#include "Text.h"
 #include <cmath>
 #include <chrono>
 #include <thread>
 #include <iostream>
 
 namespace {
+bool titleTextTest() {
+    for (const unsigned scale : {1u, 2u}) {
+        const bilibili::TextStyle style{180 * scale, 50 * scale, 14.f * scale, 0x8090c0ff, true, false, true};
+        const auto first = bilibili::rasterizeText(L"【\U0001D7D2K】周杰伦", style);
+        const auto second = bilibili::rasterizeText(L"【\U0001D7D6K】周杰伦", style);
+        if (first.bytes.size() != static_cast<size_t>(style.width) * style.height * 4 ||
+            first.bytes.size() != second.bytes.size() || first.bytes == second.bytes) return false;
+        int top = style.height, bottom = 0;
+        for (unsigned y = 0; y < style.height; ++y) {
+            for (unsigned x = 0; x < style.width; ++x) {
+                const auto pixel = &first.bytes[(static_cast<size_t>(y) * style.width + x) * 4];
+                if (pixel[3] > 128 || pixel[0] > pixel[3] || pixel[1] > pixel[3] || pixel[2] > pixel[3]) return false;
+                if (pixel[3] < 32) continue;
+                top = std::min(top, static_cast<int>(y));
+                bottom = std::max(bottom, static_cast<int>(y) + 1);
+            }
+        }
+        if (bottom <= top || std::abs(top + bottom + 2 * first.offsetY - static_cast<int>(style.height)) > 1) return false;
+    }
+    return true;
+}
+
 bool audioTest(uint32_t rate, uint32_t channels) {
     bilibili::Audio audio;
     audio.prepare(rate, channels);
@@ -114,6 +137,11 @@ int main(int argc, char** argv) {
         return 9;
     }
     if (argc == 1) {
+        if (!titleTextTest()) {
+            std::cerr << "Title fallback, centering or premultiplied alpha failed\n";
+            return 10;
+        }
+        std::cout << "Title fallback, pixel centering and premultiplied alpha passed at 100% and 200% scale\n";
         for (const auto rate : {16000u, 44100u, 48000u, 96000u, 192000u}) {
             if (!audioTest(rate, 1) || !audioTest(rate, 2)) return 1;
         }
