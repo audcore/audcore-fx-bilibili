@@ -21,7 +21,7 @@
     <div class="examples">
       <span data-text="try">试试</span>
       <button type="button" id="example-search" data-text="example">音乐现场</button>
-      <button type="button" id="example-video">BV1B7411m7LV</button>
+      <button type="button" id="example-video" data-video="BV1YfJJzVEDF">《武装乙女》</button>
     </div>
   </div>
   <section id="results" hidden aria-labelledby="results-title">
@@ -35,10 +35,13 @@
 </main>
 <section id="player" hidden aria-label="弹幕播放器">
   <header class="player-bar">
-    <button type="button" id="back" aria-label="返回"><span aria-hidden="true">←</span><span data-text="back">返回</span></button>
+    <button type="button" id="back" class="icon-button" aria-label="返回" title="返回"><span class="icon icon-back" aria-hidden="true"></span></button>
+    <label class="icon-button danmaku-toggle" title="弹幕"><input id="danmaku" type="checkbox" checked aria-label="弹幕"><span class="icon icon-danmaku" aria-hidden="true"></span></label>
+    <details id="parts" hidden>
+      <summary class="icon-button" aria-label="选集" title="选集"><span class="icon icon-parts" aria-hidden="true"></span></summary>
+      <ul id="part-list"></ul>
+    </details>
     <strong id="video-title"></strong>
-    <label class="danmaku-toggle"><input id="danmaku" type="checkbox" checked><span data-text="danmaku">弹幕</span></label>
-    <button type="button" id="fullscreen" data-text="fullscreen">全屏</button>
   </header>
   <div class="screen">
     <video id="video" playsinline preload="metadata"></video>
@@ -47,7 +50,7 @@
     <p id="player-status" role="status"></p>
   </div>
   <footer class="controls">
-    <button id="play" type="button" data-text="play">播放</button>
+    <button id="play" class="icon-button" type="button" aria-label="播放" title="播放"><span class="icon icon-play" aria-hidden="true"></span></button>
     <input id="position" type="range" min="0" max="1" value="0" step="0.01" aria-label="播放进度">
     <output id="time">0:00 / 0:00</output>
   </footer>
@@ -60,4 +63,3 @@
 </template>
 </body>
 </html>
-

@@ -14,10 +14,10 @@ const endpoints = new Map([
   ['dm', '/x/v1/dm/list.so?'],
 ]);
 
-function mediaUrl(value) {
+function cdnUrl(value, cover) {
   const url = new URL(value);
   if (url.protocol === 'https:' && !url.username && !url.password && !url.port &&
-      /\.(bilivideo\.com|bilivideo\.cn)$/.test(url.hostname)) return url;
+      (cover ? url.hostname.endsWith('.hdslb.com') : /\.(bilivideo\.com|bilivideo\.cn)$/.test(url.hostname))) return url;
   return null;
 }
 
@@ -33,7 +33,7 @@ createServer(async (request, response) => {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   response.setHeader('Cross-Origin-Embedder-Policy', 'credentialless');
-  response.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://*.hdslb.com; object-src 'none'; base-uri 'none'");
+  response.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; object-src 'none'; base-uri 'none'");
   try {
     if (files.has(name)) {
       const [file, mime] = files.get(name);
@@ -44,7 +44,8 @@ createServer(async (request, response) => {
     const kind = name.startsWith('api/') && name.slice(4);
     const endpoint = endpoints.get(kind);
     const media = kind === 'media.mp4';
-    const target = media ? mediaUrl(path.searchParams.get('url')) :
+    const cover = kind === 'cover';
+    const target = media || cover ? cdnUrl(path.searchParams.get('url'), cover) :
       endpoint && path.search.length <= 2048 && new URL(endpoint + path.search.slice(1), 'https://api.bilibili.com');
     if (!target) { response.writeHead(404).end(); return; }
     const abort = new AbortController();
@@ -58,7 +59,14 @@ createServer(async (request, response) => {
       await upstream.body?.cancel();
       return;
     }
-    response.setHeader('Content-Type', media ? 'video/mp4' : kind === 'dm' ? 'text/xml; charset=utf-8' : 'application/json; charset=utf-8');
+    const type = upstream.headers.get('content-type');
+    if (cover && !/^image\/(?:jpeg|png|webp|gif)$/i.test(type || '')) {
+      response.writeHead(502).end();
+      await upstream.body?.cancel();
+      return;
+    }
+    if (cover) response.setHeader('Cache-Control', 'private, max-age=3600');
+    response.setHeader('Content-Type', cover ? type : media ? 'video/mp4' : kind === 'dm' ? 'text/xml; charset=utf-8' : 'application/json; charset=utf-8');
     if (media) {
       for (const key of ['content-range', 'content-length', 'accept-ranges']) {
         const value = upstream.headers.get(key);
@@ -72,5 +80,3 @@ createServer(async (request, response) => {
     else response.writeHead(502).end();
   }
 }).listen(38690, '127.0.0.1', () => console.log('http://127.0.0.1:38690/bilibili/'));
-
-

@@ -8,6 +8,12 @@
 #include <string>
 
 namespace bilibili {
+struct Selection {
+    std::string id;
+    uint16_t part = 1;
+
+    bool operator==(const Selection& other) const { return id == other.id && part == other.part; }
+};
 class Audio {
     struct Frame { float left, right; };
     static constexpr uint32_t capacity = 16384, mask = capacity - 1;
@@ -18,17 +24,17 @@ class Audio {
     bool primed = false;
     uint32_t channels = 2;
     mutable std::mutex selectionMutex;
-    std::string selection;
+    Selection selection;
 
 public:
     std::atomic<uint32_t> rate{0}, sourceRate{48000};
     std::atomic<bool> bypass{false}, playing{false};
 
-    std::string videoId() const { std::lock_guard<std::mutex> lock(selectionMutex); return selection; }
-    bool select(std::string id) {
+    Selection video() const { std::lock_guard<std::mutex> lock(selectionMutex); return selection; }
+    bool select(Selection value) {
         std::lock_guard<std::mutex> lock(selectionMutex);
-        if (selection == id) return false;
-        selection = std::move(id);
+        if (selection == value) return false;
+        selection = std::move(value);
         return true;
     }
 
@@ -96,6 +102,3 @@ static_assert(std::atomic<uint32_t>::is_always_lock_free);
 static_assert(std::atomic<bool>::is_always_lock_free);
 std::shared_ptr<Audio> audioFor(uint32_t id);
 }
-
-
-

@@ -30,17 +30,15 @@ class Panel : public std::enable_shared_from_this<Panel> {
     std::shared_ptr<const bilibili::VideoFrame> pendingFrame;
     uint32_t loadId = 0, frameSequence = 0, awaitingFrame = 0;
     UINT64 bufferSize = 0;
-    std::string publishedVideo;
+    bilibili::Selection publishedVideo;
     std::shared_ptr<bilibili::Server> server;
     std::shared_ptr<bilibili::Audio> audio;
     ComPtr<ICoreWebView2Controller> controller;
     ComPtr<ICoreWebView2> view;
     std::wstring url, language = L"zh-CN";
     RECT bounds{};
-    EventRegistrationToken messages{}, navigation{}, popups{}, fullscreen{};
-    bool closed = false, subscribed = false, ready = false, com = false, full = false;
-    LONG_PTR savedStyle = 0;
-    WINDOWPLACEMENT placement{};
+    EventRegistrationToken messages{}, navigation{}, popups{};
+    bool closed = false, subscribed = false, ready = false, com = false;
 
 public:
     Panel(HWND window, AudcoreFxEdit callback, void* context) : parent(window), edit(callback), editContext(context) {}
@@ -92,7 +90,7 @@ public:
         const auto next = bilibili::audioFor(id);
         if (next != audio) {
             if (decoder) decoder->clear();
-            publishedVideo.clear();
+            publishedVideo = {};
             audio = next;
         }
         publish();
@@ -115,12 +113,10 @@ public:
         frameBuffer.Reset();
         viewWithBuffers.Reset();
         environmentWithBuffers.Reset();
-        setFullscreen(false);
         if (subscribed && view) {
             view->remove_WebMessageReceived(messages);
             view->remove_NavigationStarting(navigation);
             view->remove_NewWindowRequested(popups);
-            view->remove_ContainsFullScreenElementChanged(fullscreen);
         }
         if (controller) controller->Close();
         view.Reset();
@@ -152,11 +148,12 @@ private:
         if (!view || !ready) return;
         const bool prepared = audio && audio->rate.load(std::memory_order_acquire) != 0;
         const std::wstring message = L"{\"lang\":\"" + language + L"\",\"ready\":" + (prepared ? L"true" : L"false");
-        const auto id = audio ? audio->videoId() : std::string{};
-        if (id == publishedVideo) post(message + L"}");
+        const auto selected = audio ? audio->video() : bilibili::Selection{};
+        if (selected == publishedVideo) post(message + L"}");
         else {
-            publishedVideo = id;
-            post(message + L",\"selected\":\"" + std::wstring(id.begin(), id.end()) + L"\"}");
+            publishedVideo = selected;
+            post(message + L",\"selected\":\"" + std::wstring(selected.id.begin(), selected.id.end()) +
+                L"\",\"part\":" + std::to_wstring(selected.part) + L"}");
         }
     }
 
@@ -246,11 +243,17 @@ private:
         } else if (data.substr(0, 5) == L"load:") {
             open(data.substr(5));
         } else if (data.substr(0, 7) == L"select:" && audio) {
-            const auto id = data.substr(7);
-            if (bilibili::validVideoId(id)) {
-                publishedVideo.clear();
-                for (const auto character : id) publishedVideo.push_back(static_cast<char>(character));
-                if (audio->select(publishedVideo) && edit) edit(editContext, 11, 0, 0);
+            const auto target = data.substr(7);
+            const auto colon = target.find(':');
+            const auto id = target.substr(0, colon);
+            uint32_t part = 0;
+            if (colon != target.npos && number(target.substr(colon + 1), part) && part > 0 &&
+                part <= 9999 && bilibili::validVideoId(id)) {
+                bilibili::Selection selected;
+                selected.part = static_cast<uint16_t>(part);
+                for (const auto character : id) selected.id.push_back(static_cast<char>(character));
+                publishedVideo = selected;
+                if (audio->select(std::move(selected)) && edit) edit(editContext, 11, 0, 0);
             }
         } else if (data.substr(0, 6) == L"frame:") {
             uint32_t sequence = 0;
@@ -266,32 +269,6 @@ private:
                 uint32_t position = 0;
                 if (number(data.substr(5), position)) decoder->seek(position / 1000.);
             }
-        }
-    }
-
-    void setFullscreen(bool enter) {
-        if (enter == full) return;
-        const HWND window = GetAncestor(parent, GA_ROOT);
-        if (!window) return;
-        if (enter) {
-            MONITORINFO monitor{};
-            monitor.cbSize = sizeof monitor;
-            placement.length = sizeof placement;
-            if (!GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor) ||
-                !GetWindowPlacement(window, &placement)) return;
-            savedStyle = GetWindowLongPtrW(window, GWL_STYLE);
-            full = true;
-            SetWindowLongPtrW(window, GWL_STYLE, savedStyle & ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW));
-            const auto& rect = monitor.rcMonitor;
-            SetWindowPos(window, nullptr, rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top,
-                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        } else {
-            full = false;
-            if (!IsWindow(window)) return;
-            SetWindowLongPtrW(window, GWL_STYLE, savedStyle);
-            SetWindowPlacement(window, &placement);
-            SetWindowPos(window, nullptr, 0, 0, 0, 0,
-                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED);
         }
     }
 
@@ -325,14 +302,6 @@ private:
             [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
                 return args->put_Handled(TRUE);
             }).Get(), &popups);
-        view->add_ContainsFullScreenElementChanged(Callback<ICoreWebView2ContainsFullScreenElementChangedEventHandler>(
-            [weak](ICoreWebView2* sender, IUnknown*) -> HRESULT {
-                if (auto panel = weak.lock(); panel && !panel->closed) {
-                    BOOL active = FALSE;
-                    if (SUCCEEDED(sender->get_ContainsFullScreenElement(&active))) panel->setFullscreen(active != FALSE);
-                }
-                return S_OK;
-            }).Get(), &fullscreen);
         subscribed = true;
         controller->put_Bounds(bounds);
         view->Navigate(url.c_str());
@@ -345,7 +314,7 @@ Panel& panel(void* handle) { return **static_cast<Handle*>(handle); }
 
 extern "C" AUDCORE_FX_EXPORT const AudcoreFxEditor* audcore_fx_get_editor(uint32_t abi) {
     static const AudcoreFxEditor api{
-        sizeof api, 1, 720, 440,
+        sizeof api, 1, 720, 540,
         [](void* parent, const double*, size_t, int32_t width, int32_t height, float, AudcoreFxEdit edit, void* context) -> void* {
             if (!parent) return nullptr;
             try {
@@ -366,5 +335,3 @@ extern "C" AUDCORE_FX_EXPORT const AudcoreFxEditor* audcore_fx_get_editor(uint32
 extern "C" AUDCORE_FX_EXPORT uint32_t audcore_fx_editor_flags(uint32_t abi) {
     return abi == 1 ? AUDCORE_FX_EDITOR_RESIZABLE : 0;
 }
-
-

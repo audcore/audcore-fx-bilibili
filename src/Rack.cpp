@@ -57,8 +57,10 @@ uint32_t save(void* handle, uint8_t* output, uint32_t room) {
     auto& state = static_cast<Rack*>(handle)->saved;
     if (!output) {
         try {
-            state.assign({2, static_cast<char>(get(handle, 0))});
-            state += audio(handle).videoId();
+            const auto video = audio(handle).video();
+            state.assign({3, static_cast<char>(get(handle, 0)), static_cast<char>(video.part & 255),
+                static_cast<char>(video.part >> 8)});
+            state += video.id;
             return static_cast<uint32_t>(state.size());
         } catch (...) { return 0; }
     }
@@ -69,11 +71,15 @@ uint32_t save(void* handle, uint8_t* output, uint32_t room) {
 int restore(void* handle, const uint8_t* input, uint32_t size) {
     try {
         if (!size) { audio(handle).select({}); return set(handle, 0, 0); }
-        if (!input || size < 2 || size > 23 || input[1] > 1 ||
-            (input[0] != 2 && !(input[0] == 1 && size == 2))) return 0;
-        const std::string_view id(reinterpret_cast<const char*>(input + 2), size - 2);
-        if (!id.empty() && !validVideoId(id)) return 0;
-        audio(handle).select(std::string(id));
+        if (!input || size < 2 || input[1] > 1) return 0;
+        const auto version = input[0];
+        if ((version == 1 && size != 2) || (version == 2 && size > 23) ||
+            (version == 3 && (size < 4 || size > 25)) || version < 1 || version > 3) return 0;
+        const uint32_t prefix = version == 3 ? 4 : 2;
+        const auto part = static_cast<uint16_t>(version == 3 ? input[2] | (input[3] << 8) : 1);
+        const std::string_view id(reinterpret_cast<const char*>(input + prefix), size - prefix);
+        if (part == 0 || part > 9999 || (id.empty() ? part != 1 : !validVideoId(id))) return 0;
+        audio(handle).select({std::string(id), part});
         return set(handle, 0, static_cast<float>(input[1]));
     } catch (...) { return 0; }
 }
@@ -115,9 +121,22 @@ extern "C" AUDCORE_FX_EXPORT int audcore_fx_rack_action(void* handle, const char
         using namespace bilibili;
         const std::string_view text(command ? command : "");
         if (text.substr(0, 6) != "video:") return 0;
-        const auto id = text.substr(6);
+        const auto target = text.substr(6);
+        const auto split = target.find(':');
+        const auto id = target.substr(0, split);
+        uint16_t part = 1;
         if (!id.empty() && !validVideoId(id)) return 0;
-        audio(handle).select(std::string(id));
+        if (split != target.npos) {
+            const auto number = target.substr(split + 1);
+            if (id.empty() || number.empty() || number.size() > 4) return 0;
+            part = 0;
+            for (const char digit : number) {
+                if (digit < '0' || digit > '9') return 0;
+                part = static_cast<uint16_t>(part * 10 + digit - '0');
+            }
+            if (part == 0) return 0;
+        }
+        audio(handle).select({std::string(id), part});
         return 1;
     } catch (...) { return 0; }
 }
@@ -125,8 +144,12 @@ extern "C" AUDCORE_FX_EXPORT int audcore_fx_rack_action(void* handle, const char
 extern "C" AUDCORE_FX_EXPORT uint32_t audcore_fx_rack_get_text(
     void* handle, const char* parameter, char* output, uint32_t capacity) {
     try {
-        if (!parameter || std::strcmp(parameter, "video_id") != 0 || !output) return 0;
-        const auto id = bilibili::audio(handle).videoId();
+        if (!parameter || !output) return 0;
+        auto selection = bilibili::audio(handle).video();
+        std::string id;
+        if (std::strcmp(parameter, "video_id") == 0) id = std::move(selection.id);
+        else if (std::strcmp(parameter, "video_part") == 0) id = std::to_string(selection.part);
+        else return 0;
         if (id.size() + 1 > capacity) return 0;
         std::memcpy(output, id.c_str(), id.size() + 1);
         return static_cast<uint32_t>(id.size() + 1);

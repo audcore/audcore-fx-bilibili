@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(BilibiliFx VERSION 0.1.1 LANGUAGES CXX)
+project(BilibiliFx VERSION 0.1.2 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
@@ -50,6 +50,3 @@ target_include_directories(BilibiliTests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/ge
 target_compile_definitions(BilibiliTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(BilibiliTests PRIVATE /utf-8 /W4)
 target_link_libraries(BilibiliTests PRIVATE ws2_32 winhttp bcrypt ole32 mfplat mfreadwrite mfuuid d3d11 dxgi)
-
-
-

@@ -19,7 +19,7 @@ constexpr auto baseHeaders = "Connection: close\r\nCache-Control: no-store\r\n"
     "X-Content-Type-Options: nosniff\r\n"
     "Cross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: credentialless\r\n"
     "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self' https://*.hdslb.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n"sv;
+    "img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n"sv;
 
 struct Internet {
     HINTERNET handle;
@@ -213,7 +213,8 @@ private:
         else if (path == "panel.mjs") asset(client, "text/javascript", panelJs);
         else if (path == "routes.mjs") asset(client, "text/javascript", routesJs);
         else if (args.empty()) empty(client, "404 Not Found");
-        else if (path == "api/media.mp4" && args.substr(0, 4) == "url=") {
+        else if ((path == "api/media.mp4" || path == "api/cover") && args.substr(0, 4) == "url=" && args.size() <= 8000) {
+            const bool cover = path == "api/cover";
             const auto narrow = decode(args.substr(4));
             const std::wstring text(narrow.begin(), narrow.end());
             URL_COMPONENTS url{};
@@ -223,13 +224,13 @@ private:
                 url.nScheme != INTERNET_SCHEME_HTTPS || url.nPort != 443 || url.dwUserNameLength || url.dwPasswordLength ||
                 !url.dwHostNameLength || !url.dwUrlPathLength) { empty(client, "404 Not Found"); return; }
             const std::wstring domain(url.lpszHostName, url.dwHostNameLength);
-            if (!suffix(domain, L".bilivideo.com") && !suffix(domain, L".bilivideo.cn")) {
+            if (cover ? !suffix(domain, L".hdslb.com") : (!suffix(domain, L".bilivideo.com") && !suffix(domain, L".bilivideo.cn"))) {
                 empty(client, "404 Not Found");
                 return;
             }
             std::wstring resource(url.lpszUrlPath, url.dwUrlPathLength);
             if (url.dwExtraInfoLength) resource.append(url.lpszExtraInfo, url.dwExtraInfoLength);
-            relay(client, domain, resource, "video/mp4", header(request, "range"), true);
+            relay(client, domain, resource, "video/mp4", header(request, "range"), !cover, cover);
         } else if (args.size() <= 2048) {
             std::wstring endpoint;
             if (path == "api/search") endpoint = L"/x/web-interface/wbi/search/type?search_type=video&";
@@ -244,7 +245,7 @@ private:
     }
 
     void relay(SOCKET client, const std::wstring& domain, const std::wstring& resource,
-               std::string_view mime, const std::string& range, bool media) const {
+               std::string_view mime, const std::string& range, bool media, bool cover = false) const {
         const Internet connection{WinHttpConnect(session, domain.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0)};
         if (!connection) { empty(client, "502 Bad Gateway"); return; }
         const Internet request{WinHttpOpenRequest(connection, L"GET", resource.c_str(), nullptr,
@@ -265,6 +266,15 @@ private:
                 WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX) ||
             (status != 200 && !(media && status == 206))) { empty(client, "502 Bad Gateway"); return; }
 
+        std::string type;
+        if (cover) {
+            type = queryHeader(request, WINHTTP_QUERY_CONTENT_TYPE);
+            if (type != "image/jpeg" && type != "image/png" && type != "image/webp" && type != "image/gif") {
+                empty(client, "502 Bad Gateway");
+                return;
+            }
+            mime = type;
+        }
         std::string response = status == 206 ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n";
         response += baseHeaders;
         response += "Content-Type: " + std::string(mime) + "\r\n";

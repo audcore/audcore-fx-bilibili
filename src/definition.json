@@ -10,9 +10,8 @@
     {"id":"bypass","name":"Bypass","label":{"zh-CN":"旁通","en":"Bypass","ja":"迂回"},
       "minimum":0,"maximum":1,"step":1,"default":0,"units":"","skew":1,"component":"switch"}
   ],
-  "text_parameters": [{"id":"video_id","label":{"zh-CN":"视频编号","en":"Video ID","ja":"動画ID"}}],
+  "text_parameters": [{"id":"video_id","label":{"zh-CN":"视频编号","en":"Video ID","ja":"動画ID"}},{"id":"video_part","label":{"zh-CN":"分P","en":"Part","ja":"話数"}}],
   "visual": {"component":"none"},
   "groups": [],
   "actions": []
 }
-

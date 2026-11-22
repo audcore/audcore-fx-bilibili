@@ -6,21 +6,21 @@ const picture = $('picture');
 const host = window.chrome?.webview;
 const chinese = {
   name: '哔哩哔哩', search: '搜索', try: '试试', example: '音乐现场', results: '搜索结果',
-  more: '加载更多', back: '返回', danmaku: '弹幕', fullscreen: '全屏', exit: '退出全屏',
+  more: '加载更多', back: '返回', danmaku: '弹幕', parts: '选集',
   play: '播放', pause: '暂停', query: '关键词、BV / AV 号或视频链接', seek: '播放进度',
   loading: '正在加载…', none: '未找到相关视频', failed: '搜索失败，请重试',
   unavailable: '这个视频暂时无法播放', audio: '请先启动声核音频', blocked: '点击播放开始观看', hardware: '当前显卡无法硬解此视频', render: '当前 WebView2 无法显示视频'
 };
 const english = {
   name: 'bilibili', search: 'Search', try: 'Try', example: 'live music', results: 'Results',
-  more: 'More', back: 'Back', danmaku: 'Danmaku', fullscreen: 'Fullscreen', exit: 'Exit fullscreen',
+  more: 'More', back: 'Back', danmaku: 'Danmaku', parts: 'Parts',
   play: 'Play', pause: 'Pause', query: 'Keywords, BV / AV, or video URL', seek: 'Playback position',
   loading: 'Loading…', none: 'No videos found', failed: 'Search failed. Try again.',
   unavailable: 'This video is unavailable', audio: 'Start Audcore audio first', blocked: 'Press Play to watch', hardware: 'Hardware decoding unavailable', render: 'Update WebView2 to display video'
 };
 const japanese = {
   name: 'ビリビリ', search: '検索', try: '例', example: '音楽ライブ', results: '検索結果',
-  more: 'もっと見る', back: '戻る', danmaku: '弾幕', fullscreen: '全画面', exit: '全画面終了',
+  more: 'もっと見る', back: '戻る', danmaku: '弾幕', parts: '話数',
   play: '再生', pause: '一時停止', query: 'キーワード、BV / AV、動画URL', seek: '再生位置',
   loading: '読込中…', none: '動画が見つかりません', failed: '検索に失敗しました',
   unavailable: '再生できない動画です', audio: '声核の音声を開始してください', blocked: '再生ボタンを押してください', hardware: 'ハードウェア復号不可', render: 'WebView2 の更新が必要です'
@@ -56,6 +56,12 @@ function locale(lang) {
   $('position').setAttribute('aria-label', words.seek);
   $('player').setAttribute('aria-label', words.danmaku);
   $('back').setAttribute('aria-label', words.back);
+  $('back').title = words.back;
+  $('danmaku').setAttribute('aria-label', words.danmaku);
+  $('danmaku').parentElement.title = words.danmaku;
+  const picker = $('parts').querySelector('summary');
+  picker.title = words.parts;
+  picker.setAttribute('aria-label', words.parts);
   playbackControls();
 }
 function position() {
@@ -74,7 +80,7 @@ host?.addEventListener('message', ({data}) => {
   }
   if (data.selected && !routeFromUrl(location.href).id) {
     const selection = parseVideo(data.selected);
-    if (selection) open(selection, true);
+    if (selection) open({...selection, part: data.part || 1}, true);
   }
   if (data.id !== currentId || !data.id) return;
   const previous = nativeState;
@@ -147,7 +153,7 @@ $('search').addEventListener('submit', event => {
   submit($('query').value);
 });
 $('example-search').onclick = () => submit(words.example);
-$('example-video').onclick = () => submit($('example-video').textContent);
+$('example-video').onclick = () => submit($('example-video').dataset.video);
 window.addEventListener('popstate', render);
 
 function titleText(title) {
@@ -179,7 +185,11 @@ function addCards(rows) {
       open(target);
     };
     const cover = coverUrl(row.pic);
-    if (cover) card.querySelector('img').src = cover;
+    if (cover) {
+      const image = card.querySelector('img');
+      image.addEventListener('load', () => { image.setAttribute('data-loaded', ''); }, {once: true});
+      image.src = 'api/cover?' + new URLSearchParams({url: cover});
+    }
     card.querySelector('.duration').textContent = row.duration || '';
     card.querySelector('.card-detail strong').textContent = titleText(row.title);
     card.querySelector('.meta').textContent = row.author || '';
@@ -220,7 +230,7 @@ function sendNativeMedia() {
   const media = pendingMedia;
   pendingMedia = undefined;
   if (!media) return;
-  host.postMessage('select:' + media.bvid);
+  host.postMessage('select:' + media.bvid + ':' + media.part);
   host.postMessage('load:' + currentId + ':' + Math.round(media.time * 1000) + ':' + media.path);
   if (requestedPlay) host.postMessage('play');
 }
@@ -287,6 +297,34 @@ function updateComments() {
 }
 $('danmaku').onchange = () => { resetComments(); updateComments(); };
 
+function showParts(pages, route) {
+  const picker = $('parts');
+  const list = $('part-list');
+  list.replaceChildren();
+  picker.hidden = pages.length < 2;
+  if (picker.hidden) return;
+  for (const part of pages) {
+    const row = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'P' + part.page + ' · ' + part.part;
+    if (part.page === route.part) button.setAttribute('aria-current', 'true');
+    button.onclick = () => {
+      picker.open = false;
+      if (part.page === route.part) return;
+      history.replaceState(history.state, '', routeUrl(location.href, {...route, part: part.page, time: 0}));
+      void render();
+    };
+    row.append(button);
+    list.append(row);
+  }
+}
+document.addEventListener('pointerdown', event => {
+  $('player').removeAttribute('data-keyboard');
+  if (!$('parts').contains(event.target)) $('parts').open = false;
+});
+$('player').addEventListener('pointerleave', () => { $('parts').open = false; });
+
 async function loadVideo(route, signal) {
   $('video-title').textContent = route.id;
   $('player-status').textContent = words.loading;
@@ -297,6 +335,7 @@ async function loadVideo(route, signal) {
     const part = details.pages?.find(page => page.page === route.part);
     if (!part) throw new Error('part');
     $('video-title').textContent = details.title;
+    showParts(details.pages, route);
     void api('dm', {oid: part.cid}, signal).then(xml => {
       if (signal.aborted) return;
       comments = Array.from(new DOMParser().parseFromString(xml, 'text/xml').querySelectorAll('d'), entry => {
@@ -310,7 +349,7 @@ async function loadVideo(route, signal) {
     if (data.durl?.length !== 1 || !data.durl[0].url) throw new Error('format');
     const path = 'api/media.mp4?' + new URLSearchParams({url: data.durl[0].url});
     if (host) {
-      pendingMedia = {path, time: route.time, bvid: details.bvid};
+      pendingMedia = {path, time: route.time, bvid: details.bvid, part: part.page};
       void startPlayback();
     } else {
       video.src = path + (route.time ? '#t=' + route.time : '');
@@ -323,8 +362,11 @@ async function loadVideo(route, signal) {
 }
 
 function playbackControls() {
-  $('play').textContent = paused() ? words.play : words.pause;
-  $('fullscreen').textContent = document.fullscreenElement ? words.exit : words.fullscreen;
+  const play = $('play');
+  const playing = !paused();
+  play.toggleAttribute('data-playing', playing);
+  play.title = playing ? words.pause : words.play;
+  play.setAttribute('aria-label', play.title);
   const total = duration();
   const length = Number.isFinite(total) ? total : 0;
   $('position').max = length || 1;
@@ -367,17 +409,12 @@ video.onpause = updateComments;
 video.onseeking = () => { resetComments(); updateComments(); };
 video.onseeked = updateComments;
 video.onerror = () => { if (video.getAttribute('src')) $('player-status').textContent = words.unavailable; };
-$('fullscreen').onclick = () => {
-  const operation = document.fullscreenElement ? document.exitFullscreen() : $('player').requestFullscreen();
-  operation.catch(() => {});
-};
-document.addEventListener('fullscreenchange', playbackControls);
 $('back').onclick = () => {
-  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
   if (history.state?.index > 0) history.back();
   else open({q: ''}, true);
 };
 document.addEventListener('keydown', event => {
+  $('player').setAttribute('data-keyboard', '');
   if ($('player').hidden || !['BODY', 'VIDEO'].includes(event.target.tagName) || event.code !== 'Space') return;
   event.preventDefault();
   togglePlay();
@@ -403,13 +440,14 @@ async function render() {
   }
   comments = [];
   resetComments();
+  $('parts').open = false;
+  $('parts').hidden = true;
   $('player').hidden = !route.id;
   $('browse').hidden = Boolean(route.id);
   $('results').hidden = !route.q;
   $('browse').dataset.page = route.q ? 'results' : 'search';
   if (route.id) {
     playbackControls();
-    $('back').focus({preventScroll: true});
     await loadVideo(route, controller.signal);
   } else {
     $('query').value = route.q;
@@ -418,5 +456,3 @@ async function render() {
   }
 }
 void render();
-
-

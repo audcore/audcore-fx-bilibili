@@ -69,7 +69,7 @@ def main(path):
         get_text.argtypes = [handle, c.c_char_p, c.c_char_p, u32]
         get_text.restype = u32
         assert not action(instances[0], b"video:invalid")
-        assert action(instances[0], b"video:BV1B7411m7LV")
+        assert action(instances[0], b"video:BV1F8yVzKETm:2")
         assert rack.set(instances[0], 0, 1)
         state = (c.c_uint8 * rack.save(instances[0], None, 0))()
         assert rack.save(instances[0], state, len(state)) == len(state)
@@ -77,7 +77,14 @@ def main(path):
         assert rack.get(instances[1], 0) == 1
         video_id = c.create_string_buffer(22)
         assert get_text(instances[1], b"video_id", video_id, len(video_id))
-        assert video_id.value == b"BV1B7411m7LV"
+        assert video_id.value == b"BV1F8yVzKETm"
+        assert get_text(instances[1], b"video_part", video_id, len(video_id))
+        assert video_id.value == b"2"
+        legacy_id = b"BV1YfJJzVEDF"
+        legacy_state = (c.c_uint8 * (2 + len(legacy_id))).from_buffer_copy(bytes([2, 0]) + legacy_id)
+        assert rack.restore(instances[1], legacy_state, len(legacy_state))
+        assert get_text(instances[1], b"video_part", video_id, len(video_id))
+        assert video_id.value == b"1"
     finally:
         for instance in instances:
             rack.destroy(instance)
@@ -96,12 +103,32 @@ def server_test(executable):
                 return urlopen(Request(base + path + query, headers=headers or {}), timeout=12)
 
             with fetch("") as response:
-                assert b'id="player"' in response.read()
+                page = response.read()
+                assert b'id="player"' in page and b'data-video="BV1YfJJzVEDF"' in page
+                assert b'id="fullscreen"' not in page
+                assert all(f'class="icon icon-{icon}"'.encode() in page for icon in ("back", "danmaku", "play"))
                 assert response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+            with fetch("panel.css") as response:
+                css = response.read()
+                assert b"aspect-ratio: 4 / 3" in css and b"#player:hover" in css and b"#201a21bf" in css
+                assert b"transition:" not in css
             with fetch("api/search", {"keyword": "\u97f3\u4e50\u73b0\u573a", "page": 1}) as response:
                 result = json.load(response)
-                assert result["code"] == 0 and any(row["type"] == "video" for row in result["data"]["result"])
-            bvid = "BV1B7411m7LV"
+                assert result["code"] == 0
+                cover = next(row["pic"] for row in result["data"]["result"] if row["type"] == "video")
+            cover = ("https:" + cover) if cover.startswith("//") else cover.replace("http:", "https:", 1)
+            with fetch("api/cover", {"url": cover}) as response:
+                assert response.headers["Content-Type"] in ("image/jpeg", "image/png", "image/webp", "image/gif")
+                assert len(response.read()) > 1024
+            multi = "BV1F8yVzKETm"
+            with fetch("api/view", {"bvid": multi}) as response:
+                pages = json.load(response)["data"]["pages"]
+                second = next(page for page in pages if page["page"] == 2)
+            with fetch("api/play", {"bvid": multi, "cid": second["cid"]}) as response:
+                second_media = json.load(response)["data"]["durl"][0]["url"]
+            with fetch("api/media.mp4", {"url": second_media}, {"Range": "bytes=0-63"}) as response:
+                assert response.status == 206 and len(response.read()) == 64
+            bvid = "BV1YfJJzVEDF"
             with fetch("api/view", {"bvid": bvid}) as response:
                 cid = json.load(response)["data"]["cid"]
             with fetch("api/dm", {"oid": cid}) as response:
@@ -112,7 +139,7 @@ def server_test(executable):
                 assert response.status == 206 and len(response.read()) == 64
             subprocess.run([executable, "--decode", base + "api/media.mp4?" + urlencode({"url": media})],
                            check=True, timeout=35)
-            print("BILIBILI native loopback search, video details, danmaku and MP4 ranges verified")
+            print("BILIBILI native loopback search, video details, danmaku, covers, part 2 and MP4 ranges verified")
         finally:
             server.stdin.write("\n")
             server.stdin.flush()
@@ -123,5 +150,3 @@ if __name__ == "__main__":
     main(sys.argv[1])
     if len(sys.argv) > 2:
         server_test(sys.argv[2])
-
-

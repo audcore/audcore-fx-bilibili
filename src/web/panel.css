@@ -54,33 +54,71 @@ h1 { margin: 0; font-size: clamp(24px, 6vw, 36px); letter-spacing: .035em; }
 .card { display: block; height: 100%; overflow: hidden; border-radius: 11px; background: var(--surface); color: inherit; text-decoration: none; }
 .card:hover { background: var(--control); }
 .cover { position: relative; aspect-ratio: 16 / 9; background: #352a36; }
+.cover img:not([data-loaded]) { visibility: hidden; }
 .cover img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .duration { position: absolute; bottom: 6px; right: 6px; padding: 2px 5px; border-radius: 5px; background: #171017eb; font-size: 11px; }
 .card-detail { display: grid; gap: 7px; padding: 10px 11px 12px; }
 .card-detail strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; min-height: 2.75em; font-size: 14px; line-height: 1.375; }
 .meta { color: var(--quiet); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #more { display: block; margin: 18px auto 0; }
-#player { height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: #100d11; }
-#player:fullscreen { height: 100%; }
-.player-bar, .controls { display: flex; gap: 8px; align-items: center; padding: 7px clamp(8px, 2vw, 18px); background: #201a21; }
-.player-bar button, .controls button, .danmaku-toggle { min-height: 36px; padding: 6px 10px; white-space: nowrap; }
-#back { display: inline-flex; align-items: center; gap: 6px; }
+body:has(#player:not([hidden])) { min-height: 100dvh; display: grid; place-items: center; background: #080709; }
+#player {
+  width: min(100vw, calc(100dvh * 4 / 3)); aspect-ratio: 4 / 3;
+  position: relative; isolation: isolate; background: #100d11;
+}
+.player-bar, .controls {
+  position: absolute; z-index: 2; inset-inline: 0;
+  display: flex; gap: 8px; align-items: center; padding: 7px clamp(8px, 2vw, 18px);
+  background: #201a21bf; opacity: 0; pointer-events: none;
+}
+.player-bar { top: 0; }
+.controls { bottom: 0; }
+#player:hover :is(.player-bar, .controls),
+#player[data-keyboard]:has(.player-bar :focus-visible, .controls :focus-visible) :is(.player-bar, .controls) {
+  opacity: 1; pointer-events: auto;
+}
+@media (hover: none) {
+  .player-bar, .controls { opacity: 1; pointer-events: auto; }
+}
+.icon-button {
+  flex: none; display: grid; place-items: center; width: 36px; height: 36px; padding: 0;
+  border-radius: 9px; background: var(--control); cursor: pointer;
+}
+.icon { display: block; width: 16px; height: 16px; background: currentColor; }
+.icon-back { clip-path: polygon(0 50%, 46% 6%, 58% 18%, 33% 43%, 100% 43%, 100% 57%, 33% 57%, 58% 82%, 46% 94%); }
+.icon-play { clip-path: polygon(23% 9%, 92% 50%, 23% 91%); }
+[data-playing] .icon-play { clip-path: polygon(22% 10%, 43% 10%, 43% 90%, 22% 90%, 22% 10%, 58% 10%, 79% 10%, 79% 90%, 58% 90%, 58% 10%); }
+.icon-parts { clip-path: polygon(9% 12%, 90% 12%, 90% 26%, 9% 26%, 9% 44%, 90% 44%, 90% 58%, 9% 58%, 9% 76%, 90% 76%, 90% 90%, 9% 90%); }
+#parts { position: relative; flex: none; z-index: 1; }
+#parts summary { list-style: none; }
+#parts summary::-webkit-details-marker { display: none; }
+#parts[open] summary { background: #513043; color: #ffcce1; }
+#part-list {
+  position: absolute; inset: calc(100% + 5px) auto auto 0; width: min(280px, calc(100vw - 110px));
+  max-height: min(48dvh, 280px); overflow-y: auto; margin: 0; padding: 5px; list-style: none;
+  background: var(--surface); border-radius: 10px; box-shadow: 0 8px 25px #000a;
+}
+#part-list button { display: block; width: 100%; text-align: left; background: transparent; }
+#part-list button:hover { background: var(--control); }
+#part-list button[aria-current="true"] { background: #513043; color: #ffcce1; }
+.icon-danmaku { position: relative; width: 17px; height: 13px; border: 1.5px solid currentColor; border-radius: 3px; background: none; }
+.icon-danmaku::before, .icon-danmaku::after { content: ""; position: absolute; left: 3px; height: 1.5px; border-radius: 2px; background: currentColor; }
+.icon-danmaku::before { top: 3px; width: 8px; }
+.icon-danmaku::after { top: 6px; width: 5px; }
 #video-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 14px; }
-.danmaku-toggle { position: relative; display: grid; place-items: center; border-radius: 9px; background: var(--control); cursor: pointer; }
+.danmaku-toggle { position: relative; }
+.danmaku-toggle:hover { background: #433443; }
 .danmaku-toggle:has(:checked) { background: #513043; color: #ffcce1; }
 .danmaku-toggle:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
 .danmaku-toggle input { position: absolute; opacity: 0; }
-.screen { position: relative; overflow: hidden; background: #080709; }
+.screen { position: absolute; inset: 0; overflow: hidden; background: #080709; }
 video, #picture { width: 100%; height: 100%; display: block; object-fit: contain; }
 #danmaku-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 #danmaku-layer span { position: absolute; white-space: nowrap; font-weight: 700; line-height: 26px; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; }
 #player-status { position: absolute; inset: 50% 12px auto; margin: 0; text-align: center; transform: translateY(-50%); pointer-events: none; }
 #player-status:not(:empty) { text-shadow: 0 1px 4px #000; }
-#play { min-width: 64px; }
 #position { min-width: 0; flex: 1; accent-color: var(--accent); }
 #time { flex: none; min-width: 14ch; text-align: right; font: 12px ui-monospace, monospace; }
 @media (max-width: 380px) {
-  #back span:last-child { display: none; }
   .player-bar, .controls { gap: 5px; }
 }
-
