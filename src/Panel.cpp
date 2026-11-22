@@ -224,16 +224,20 @@ void drawIcon(Graphics& g, Action action, Box box, Color color, bool playing) {
     default: break;
     }
 }
-void image(Graphics& g, const uint8_t* pixels, uint32_t width, uint32_t height, Box box, bool crop) {
+void image(Graphics& g, const uint8_t* pixels, uint32_t width, uint32_t height, Box box, bool crop, double pixelAspect = 1.) {
     if (!pixels || !width || !height || box.w <= 0 || box.h <= 0) return;
     Bitmap bitmap(static_cast<INT>(width), static_cast<INT>(height), static_cast<INT>(width * 4),
         PixelFormat32bppPARGB, const_cast<BYTE*>(pixels));
-    const float xScale = box.w / static_cast<float>(width), yScale = box.h / static_cast<float>(height);
+    const auto displayWidth = static_cast<float>(width * pixelAspect);
+    const float xScale = box.w / displayWidth, yScale = box.h / static_cast<float>(height);
     const float factor = crop ? std::max(xScale, yScale) : std::min(xScale, yScale);
-    const float w = static_cast<float>(width) * factor, h = static_cast<float>(height) * factor;
+    const float w = displayWidth * factor, h = static_cast<float>(height) * factor;
     const auto saved = g.Save();
     g.SetClip(box.rect(), CombineModeIntersect);
-    g.DrawImage(&bitmap, RectF(box.x + (box.w - w) / 2, box.y + (box.h - h) / 2, w, h));
+    ImageAttributes attributes;
+    attributes.SetWrapMode(WrapModeTileFlipXY);
+    g.DrawImage(&bitmap, RectF(box.x + (box.w - w) / 2, box.y + (box.h - h) / 2, w, h),
+        0, 0, static_cast<float>(width), static_cast<float>(height), UnitPixel, &attributes);
     g.Restore(saved);
 }
 std::wstring timeText(double seconds) {
@@ -979,7 +983,8 @@ private:
         g.Restore(saved);
     }
     void paintPlayer(Graphics& g) {
-        if (frame && !frame->bgra.empty()) image(g, frame->bgra.data(), frame->width, frame->height, {0, 0, width, height}, false);
+        if (frame && !frame->bgra.empty())
+            image(g, frame->bgra.data(), frame->width, frame->height, {0, 0, width, height}, false, frame->pixelAspect);
         paintComments(g);
         if (status) label(g, status, {8, height / 2 - 18, width - 16, 36}, 15, ink, false, true);
         if (!hovering && !keyboard) return;

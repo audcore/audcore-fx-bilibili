@@ -13,7 +13,6 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
-#include <cstring>
 #include <mutex>
 #include <thread>
 
@@ -42,6 +41,22 @@ void setPlaying(const std::shared_ptr<Audio>& audio, bool playing) {
     if (audio->playing.exchange(playing, std::memory_order_acq_rel) != playing) audio->reset();
 }
 
+VideoArea displayArea(IMFMediaType* type, uint32_t width, uint32_t height) {
+    if (!type) return {};
+    for (const auto* key : {&MF_MT_MINIMUM_DISPLAY_APERTURE, &MF_MT_GEOMETRIC_APERTURE}) {
+        MFVideoArea value{};
+        UINT32 length = 0;
+        if (FAILED(type->GetBlob(*key, reinterpret_cast<BYTE*>(&value), sizeof value, &length)) ||
+            length != sizeof value || value.Area.cx <= 0 || value.Area.cy <= 0) continue;
+        const double x = value.OffsetX.value + value.OffsetX.fract / 65536.;
+        const double y = value.OffsetY.value + value.OffsetY.fract / 65536.;
+        if (x < 0 || y < 0 || x + value.Area.cx > width || y + value.Area.cy > height) continue;
+        return {static_cast<uint32_t>(std::lround(x)), static_cast<uint32_t>(std::lround(y)),
+            static_cast<uint32_t>(value.Area.cx), static_cast<uint32_t>(value.Area.cy)};
+    }
+    return {};
+}
+
 class File {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
@@ -49,6 +64,8 @@ class File {
     ComPtr<ID3D11Texture2D> staging;
     ComPtr<IMFSourceReader> reader;
     uint32_t width = 0, height = 0;
+    VideoArea visible{};
+    double pixelAspect = 1;
     bool bt709 = true, fullRange = false;
 
     bool getDevice() {
@@ -128,8 +145,23 @@ public:
             FAILED(MFGetAttributeSize(type.Get(), MF_MT_FRAME_SIZE, &width, &height)) ||
             !width || !height || width > 3840 || height > 2160 || (width & 1) || (height & 1))
             return MF_E_INVALIDMEDIATYPE;
+        ComPtr<IMFMediaType> native;
+        reader->GetNativeMediaType(videoStream, static_cast<DWORD>(MF_SOURCE_READER_CURRENT_TYPE_INDEX), &native);
+        visible = displayArea(type.Get(), width, height);
+        if (!visible.width) {
+            uint32_t nativeWidth = 0, nativeHeight = 0;
+            if (native && SUCCEEDED(MFGetAttributeSize(native.Get(), MF_MT_FRAME_SIZE, &nativeWidth, &nativeHeight)) &&
+                nativeWidth && nativeHeight && nativeWidth <= width && nativeHeight <= height) {
+                visible = displayArea(native.Get(), nativeWidth, nativeHeight);
+                if (!visible.width) visible = {0, 0, nativeWidth, nativeHeight};
+            } else visible = {0, 0, width, height};
+        }
+        UINT32 numerator = 0, denominator = 0;
+        if (FAILED(MFGetAttributeRatio(type.Get(), MF_MT_PIXEL_ASPECT_RATIO, &numerator, &denominator)) && native)
+            MFGetAttributeRatio(native.Get(), MF_MT_PIXEL_ASPECT_RATIO, &numerator, &denominator);
+        pixelAspect = numerator && denominator ? static_cast<double>(numerator) / denominator : 1.;
         UINT32 tag = 0;
-        bt709 = FAILED(type->GetUINT32(MF_MT_YUV_MATRIX, &tag)) ? height >= 720 : tag == MFVideoTransferMatrix_BT709;
+        bt709 = FAILED(type->GetUINT32(MF_MT_YUV_MATRIX, &tag)) ? visible.height >= 720 : tag == MFVideoTransferMatrix_BT709;
         fullRange = SUCCEEDED(type->GetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, &tag)) && tag == MFNominalRange_0_255;
         return S_OK;
     }
@@ -158,9 +190,10 @@ public:
         sample.end = (flags & MF_SOURCE_READERF_ENDOFSTREAM) != 0;
         ComPtr<IMFMediaType> type;
         GUID major{};
-        if ((sample.payload || sample.end) && SUCCEEDED(reader->GetCurrentMediaType(sample.stream, &type)) &&
+        const bool typeChanged = (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0;
+        if ((sample.payload || sample.end || typeChanged) && SUCCEEDED(reader->GetCurrentMediaType(sample.stream, &type)) &&
             SUCCEEDED(type->GetGUID(MF_MT_MAJOR_TYPE, &major))) sample.video = major == MFMediaType_Video;
-        if (sample.video && (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED)) return updateVideoType();
+        if (sample.video && typeChanged) return updateVideoType();
         return S_OK;
     }
 
@@ -190,23 +223,16 @@ public:
             const HRESULT result = device->CreateTexture2D(&desc, nullptr, &staging);
             if (FAILED(result)) return result;
         }
-        output.width = width;
-        output.height = height;
         output.timestamp = sample.timestamp / 10;
-        output.bt709 = bt709;
-        output.fullRange = fullRange;
-        output.nv12.resize(static_cast<size_t>(width) * height * 3 / 2);
+        output.pixelAspect = pixelAspect;
+        output.bgra.resize(static_cast<size_t>(visible.width) * visible.height * 4);
         context->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, texture.Get(), plane, nullptr);
         D3D11_MAPPED_SUBRESOURCE map{};
         const HRESULT result = context->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &map);
         if (FAILED(result)) return result;
-        const auto* bytes = static_cast<const uint8_t*>(map.pData);
-        for (uint32_t row = 0; row < height; ++row)
-            std::memcpy(output.nv12.data() + static_cast<size_t>(row) * width, bytes + static_cast<size_t>(row) * map.RowPitch, width);
-        bytes += static_cast<size_t>(desc.Height) * map.RowPitch;
-        for (uint32_t row = 0; row < height / 2; ++row)
-            std::memcpy(output.nv12.data() + static_cast<size_t>(height + row) * width,
-                bytes + static_cast<size_t>(row) * map.RowPitch, width);
+        const auto* luma = static_cast<const uint8_t*>(map.pData);
+        const auto* chroma = luma + static_cast<size_t>(desc.Height) * map.RowPitch;
+        convertNv12(output, luma, chroma, map.RowPitch, visible, bt709, fullRange);
         context->Unmap(staging.Get(), 0);
         return S_OK;
     }
@@ -227,27 +253,30 @@ public:
         return S_OK;
     }
 };
+}
 
 // Color conversion runs on the decoder worker. Opaque BGRA is also valid
 // premultiplied BGRA for the native drawing surface.
-void drawPixels(VideoFrame& frame) {
-    const size_t area = static_cast<size_t>(frame.width) * frame.height;
-    frame.bgra.resize(area * 4);
-    const auto* luma = frame.nv12.data();
-    const auto* chroma = luma + area;
-    const int red = frame.fullRange ? (frame.bt709 ? 403 : 359) : (frame.bt709 ? 459 : 409);
-    const int greenU = frame.fullRange ? (frame.bt709 ? 48 : 88) : (frame.bt709 ? 55 : 100);
-    const int greenV = frame.fullRange ? (frame.bt709 ? 120 : 183) : (frame.bt709 ? 136 : 208);
-    const int blue = frame.fullRange ? (frame.bt709 ? 475 : 454) : (frame.bt709 ? 541 : 516);
+void convertNv12(VideoFrame& frame, const uint8_t* luma, const uint8_t* chroma, size_t pitch,
+    VideoArea area, bool bt709, bool fullRange) {
+    frame.width = area.width;
+    frame.height = area.height;
+    frame.bgra.resize(static_cast<size_t>(area.width) * area.height * 4);
+    const int red = fullRange ? (bt709 ? 403 : 359) : (bt709 ? 459 : 409);
+    const int greenU = fullRange ? (bt709 ? 48 : 88) : (bt709 ? 55 : 100);
+    const int greenV = fullRange ? (bt709 ? 120 : 183) : (bt709 ? 136 : 208);
+    const int blue = fullRange ? (bt709 ? 475 : 454) : (bt709 ? 541 : 516);
     const auto color = [](int value) { return static_cast<uint8_t>(std::clamp((value + 128) >> 8, 0, 255)); };
     for (uint32_t row = 0; row < frame.height; ++row) {
-        const size_t uv = static_cast<size_t>(row / 2) * frame.width;
-        const size_t line = static_cast<size_t>(row) * frame.width;
+        const size_t uv = static_cast<size_t>((area.y + row) / 2) * pitch;
+        const auto* line = luma + static_cast<size_t>(area.y + row) * pitch + area.x;
+        auto* output = frame.bgra.data() + static_cast<size_t>(row) * frame.width * 4;
         for (uint32_t column = 0; column < frame.width; ++column) {
-            const int u = chroma[uv + (column & ~1u)] - 128;
-            const int v = chroma[uv + (column | 1u)] - 128;
-            const int y = frame.fullRange ? luma[line + column] * 256 : std::max(0, luma[line + column] - 16) * 298;
-            auto* pixel = frame.bgra.data() + (line + column) * 4;
+            const auto sourceX = area.x + column;
+            const int u = chroma[uv + (sourceX & ~1u)] - 128;
+            const int v = chroma[uv + (sourceX | 1u)] - 128;
+            const int y = fullRange ? line[column] * 256 : std::max(0, line[column] - 16) * 298;
+            auto* pixel = output + column * 4;
             pixel[0] = color(y + blue * u);
             pixel[1] = color(y - greenU * u - greenV * v);
             pixel[2] = color(y + red * v);
@@ -255,6 +284,7 @@ void drawPixels(VideoFrame& frame) {
         }
     }
 }
+namespace {
 struct Request {
     uint32_t id = 0;
     uint64_t file = 0, seek = 0, version = 0;
@@ -424,7 +454,6 @@ struct Decoder::State {
                     auto frame = std::make_shared<VideoFrame>();
                     result = file->frame(sample, *frame);
                     if (SUCCEEDED(result)) {
-                        drawPixels(*frame);
                         if (primingSeek) {
                             // Network reads and keyframe preroll are outside playback time.
                             position = std::max(seekTo, timestamp);
@@ -505,7 +534,7 @@ bool verifyHardwareDecode(const std::wstring& url) {
         if (FAILED(file.read(true, sample)) || sample.end) return false;
         if (sample.payload) {
             VideoFrame frame;
-            return SUCCEEDED(file.frame(sample, frame)) && !frame.nv12.empty() && file.sampleRate > 0;
+            return SUCCEEDED(file.frame(sample, frame)) && !frame.bgra.empty() && file.sampleRate > 0;
         }
     }
     return false;

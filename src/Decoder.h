@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -8,12 +9,19 @@
 namespace bilibili {
 class Audio;
 
+struct VideoArea {
+    uint32_t x, y, width, height;
+};
+
 struct VideoFrame {
     uint32_t width = 0, height = 0;
     int64_t timestamp = 0;
-    bool bt709 = true, fullRange = false;
-    std::vector<uint8_t> nv12, bgra;
+    double pixelAspect = 1;
+    std::vector<uint8_t> bgra;
 };
+
+void convertNv12(VideoFrame& frame, const uint8_t* luma, const uint8_t* chroma, size_t pitch,
+    VideoArea area, bool bt709, bool fullRange);
 
 enum class Playback : int { idle, loading, paused, playing, ended, failed };
 struct PlaybackUpdate {

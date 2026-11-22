@@ -12,6 +12,33 @@
 #include <iostream>
 
 namespace {
+bool frameCropTest() {
+    constexpr size_t pitch = 12;
+    constexpr unsigned surfaceHeight = 8;
+    std::array<uint8_t, pitch * surfaceHeight * 3 / 2> pixels;
+    pixels.fill(255);
+    auto* chroma = pixels.data() + pitch * surfaceHeight;
+    std::fill(chroma, pixels.data() + pixels.size(), uint8_t{128});
+    // The visible picture starts off the origin. Each row and column is
+    // distinguishable, including the last picture row next to the padding.
+    for (unsigned y = 0; y < 4; ++y)
+        for (unsigned x = 0; x < 5; ++x) pixels[(y + 1) * pitch + x + 1] = static_cast<uint8_t>(20 + y * 30 + x);
+    chroma[2 * pitch + 4] = 150;
+    bilibili::VideoFrame frame;
+    bilibili::convertNv12(frame, pixels.data(), chroma, pitch, {1, 1, 5, 4}, true, true);
+    if (frame.width != 5 || frame.height != 4 || frame.bgra.size() != 80) return false;
+    for (unsigned y = 0; y < frame.height; ++y) {
+        for (unsigned x = 0; x < frame.width; ++x) {
+            const auto* pixel = frame.bgra.data() + (y * frame.width + x) * 4;
+            const unsigned expected = 20 + y * 30 + x;
+            const bool blue = y == 3 && x >= 3;
+            if (pixel[3] != 255 || pixel[2] != expected ||
+                pixel[0] != expected + (blue ? 41 : 0) || pixel[1] != expected - (blue ? 4 : 0)) return false;
+        }
+    }
+    return true;
+}
+
 bool titleTextTest() {
     for (const unsigned scale : {1u, 2u}) {
         const bilibili::TextStyle style{180 * scale, 50 * scale, 14.f * scale, 0x8090c0ff, true, false, true};
@@ -87,13 +114,16 @@ int main(int argc, char** argv) {
         std::cout << "Native search, premultiplied covers, part selection and danmaku passed\n";
         return 0;
     }
-    if (argc == 3 && std::string_view(argv[1]) == "--decode") {
+    if ((argc == 3 || argc == 6) && std::string_view(argv[1]) == "--decode") {
         const std::string_view url(argv[2]);
         if (!bilibili::verifyHardwareDecode(std::wstring(url.begin(), url.end()))) return 3;
         const auto audio = std::make_shared<bilibili::Audio>();
         audio->prepare(48000, 2);
         bilibili::Decoder player([] {});
-        player.load(1, std::wstring(url.begin(), url.end()), 10, audio);
+        const double start = argc == 6 ? std::stod(argv[3]) : 10.;
+        const auto expectedWidth = argc == 6 ? std::stoul(argv[4]) : 0;
+        const auto expectedHeight = argc == 6 ? std::stoul(argv[5]) : 0;
+        player.load(1, std::wstring(url.begin(), url.end()), start, audio);
         player.play(true);
         std::array<float, 256> pcm{};
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
@@ -103,7 +133,11 @@ int main(int argc, char** argv) {
             const auto update = player.take();
             if (update.state == bilibili::Playback::failed) return 4;
             duration = update.duration;
-            picture |= update.frame && !update.frame->nv12.empty() &&
+            if (update.frame && expectedWidth && (update.frame->width != expectedWidth || update.frame->height != expectedHeight)) {
+                std::cerr << "Unexpected visible frame size " << update.frame->width << 'x' << update.frame->height << '\n';
+                return 12;
+            }
+            picture |= update.frame && !update.frame->bgra.empty() &&
                 update.frame->bgra.size() == static_cast<size_t>(update.frame->width) * update.frame->height * 4 &&
                 update.frame->bgra[3] == 255;
             pcm.fill(0.f);
@@ -113,6 +147,10 @@ int main(int argc, char** argv) {
         }
         if (!picture || !audible) return 5;
         std::cout << "Media Foundation produced D3D11 NV12 video and audible PCM in the rack mixer\n";
+        if (expectedWidth) {
+            std::cout << "Visible picture matches " << expectedWidth << 'x' << expectedHeight << " at " << start << "s\n";
+            return 0;
+        }
 
         if (duration <= 25) return 6;
         const double target = duration * .75;
@@ -137,6 +175,11 @@ int main(int argc, char** argv) {
         return 9;
     }
     if (argc == 1) {
+        if (!frameCropTest()) {
+            std::cerr << "NV12 picture crop includes padding or samples the wrong chroma cells\n";
+            return 11;
+        }
+        std::cout << "NV12 visible frame excludes the coded padding and preserves its last row\n";
         if (!titleTextTest()) {
             std::cerr << "Title fallback, centering or premultiplied alpha failed\n";
             return 10;
