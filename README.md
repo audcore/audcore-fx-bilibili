@@ -9,6 +9,12 @@
 - 视频声音从效果器插入点进入通道，受后续效果器和通道路由处理。视频编号与分 P 随效果器状态保存。关闭播放器窗口结束本次播放。
 - 效果器需要 x64 Windows 和支持 D3D11 视频解码的显卡。目前播放范围为哔哩哔哩提供公开 MP4 播放流的视频。
 
+## 独立 VST3
+
+Windows 64 位 VST3 版适用于支持 VST3 的宿主，通过[声核官网](https://audcore.utae.cn/bilibili/)购买。将下载的 `.vst3` 文件放入宿主的扫描目录，重新扫描后添加 Bilibili。声核用户仍可免费安装 FX 版。
+
+构建时在相邻目录准备 `audcore` 和 `audcore-plugins`，运行 `pwsh -NoProfile -File scripts/build-local-bilibili.ps1 -Vst3`。在同一直播编译锁下构建并验证两种格式。VST3 交付文件为 `build/package/Bilibili-v版本.vst3`。
+
 ## 网页源预览
 
 运行 `node scripts/preview-bilibili.mjs`，用浏览器或 OBS 浏览器源打开 `http://127.0.0.1:38690/bilibili/`。预览使用真实搜索、弹幕和视频，声音由浏览器播放。
