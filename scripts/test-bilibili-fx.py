@@ -45,7 +45,8 @@ def main(path):
     assert definition["label"]["zh-CN"] == "\u54d4\u54e9\u54d4\u54e9"
     assert definition["fuid"] == rack.fuid.decode()
     library.audcore_fx_get_editor.restype = handle
-    assert library.audcore_fx_get_editor(1)
+    editor = library.audcore_fx_get_editor(1)
+    assert editor and tuple(c.cast(editor, c.POINTER(c.c_int32 * 4)).contents[2:]) == (720, 540)
     instances = [rack.create(), rack.create()]
     assert all(instances)
     try:
@@ -102,16 +103,7 @@ def server_test(executable):
                 query = "?" + urlencode(parameters) if parameters else ""
                 return urlopen(Request(base + path + query, headers=headers or {}), timeout=12)
 
-            with fetch("") as response:
-                page = response.read()
-                assert b'id="player"' in page and b'data-video="BV1YfJJzVEDF"' in page
-                assert b'id="fullscreen"' not in page
-                assert all(f'class="icon icon-{icon}"'.encode() in page for icon in ("back", "danmaku", "play"))
-                assert response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
-            with fetch("panel.css") as response:
-                css = response.read()
-                assert b"aspect-ratio: 4 / 3" in css and b"#player:hover" in css and b"#201a21bf" in css
-                assert b"transition:" not in css
+            subprocess.run([executable, "--api", base], check=True, timeout=35)
             with fetch("api/search", {"keyword": "\u97f3\u4e50\u73b0\u573a", "page": 1}) as response:
                 result = json.load(response)
                 assert result["code"] == 0

@@ -3,7 +3,6 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <winhttp.h>
-#include "Assets.h"
 #include "Server.h"
 #include <algorithm>
 #include <array>
@@ -15,11 +14,7 @@
 namespace bilibili {
 namespace {
 using namespace std::string_view_literals;
-constexpr auto baseHeaders = "Connection: close\r\nCache-Control: no-store\r\n"
-    "X-Content-Type-Options: nosniff\r\n"
-    "Cross-Origin-Opener-Policy: same-origin\r\nCross-Origin-Embedder-Policy: credentialless\r\n"
-    "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n"sv;
+constexpr auto baseHeaders = "Connection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n"sv;
 
 struct Internet {
     HINTERNET handle;
@@ -37,12 +32,6 @@ bool sendAll(SOCKET socket, std::string_view data) {
 }
 void empty(SOCKET socket, const char* status) {
     sendAll(socket, std::string("HTTP/1.1 ") + status + "\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-}
-void asset(SOCKET socket, std::string_view mime, std::string_view bytes) {
-    const auto headers = std::string("HTTP/1.1 200 OK\r\n") + std::string(baseHeaders) +
-        "Content-Type: " + std::string(mime) + "; charset=utf-8\r\nContent-Length: " +
-        std::to_string(bytes.size()) + "\r\n\r\n";
-    if (sendAll(socket, headers)) sendAll(socket, bytes);
 }
 std::string trim(std::string_view text) {
     const auto first = text.find_first_not_of(" \t");
@@ -208,11 +197,7 @@ private:
         const auto question = relative.find('?');
         const auto path = relative.substr(0, question);
         const auto args = question == relative.npos ? ""sv : relative.substr(question + 1);
-        if (path.empty()) asset(client, "text/html", html);
-        else if (path == "panel.css") asset(client, "text/css", css);
-        else if (path == "panel.mjs") asset(client, "text/javascript", panelJs);
-        else if (path == "routes.mjs") asset(client, "text/javascript", routesJs);
-        else if (args.empty()) empty(client, "404 Not Found");
+        if (args.empty()) empty(client, "404 Not Found");
         else if ((path == "api/media.mp4" || path == "api/cover") && args.substr(0, 4) == "url=" && args.size() <= 8000) {
             const bool cover = path == "api/cover";
             const auto narrow = decode(args.substr(4));

@@ -1,4 +1,7 @@
 #include "Audio.h"
+#include "Api.h"
+#include <windows.h>
+#include <objbase.h>
 #include "Decoder.h"
 #include <string_view>
 #include "Server.h"
@@ -40,6 +43,27 @@ bool audioTest(uint32_t rate, uint32_t channels) {
 }
 
 int main(int argc, char** argv) {
+    if (argc == 3 && std::string_view(argv[1]) == "--api") {
+        const std::string_view url(argv[2]);
+        const std::wstring base(url.begin(), url.end());
+        const auto initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        if (FAILED(initialized)) return 6;
+        const auto target = bilibili::parseTarget(L"https://www.bilibili.com/video/BV1F8yVzKETm/?p=2");
+        const auto page = bilibili::search(base, L"音乐现场", 1);
+        const auto cover = page && !page->rows.empty() ? bilibili::loadCover(base, page->rows.front().cover) : nullptr;
+        const auto video = target ? bilibili::loadVideo(base, *target) : std::nullopt;
+        const auto comments = bilibili::loadComments(base, 168325345);
+        CoUninitialize();
+        if (!target || target->part != 2 || !cover || !video || video->parts.size() < 2 || video->target.part != 2 ||
+            video->media.empty() || comments.empty() || cover->bytes.size() != static_cast<size_t>(cover->width) * cover->height * 4)
+            return 7;
+        for (size_t i = 0; i < cover->bytes.size(); i += 4) {
+            const auto& pixel = cover->bytes;
+            if (pixel[i] > pixel[i+3] || pixel[i+1] > pixel[i+3] || pixel[i+2] > pixel[i+3]) return 8;
+        }
+        std::cout << "Native search, premultiplied covers, part selection and danmaku passed\n";
+        return 0;
+    }
     if (argc == 3 && std::string_view(argv[1]) == "--decode") {
         const std::string_view url(argv[2]);
         if (!bilibili::verifyHardwareDecode(std::wstring(url.begin(), url.end()))) return 3;
@@ -54,7 +78,9 @@ int main(int argc, char** argv) {
         while (std::chrono::steady_clock::now() < deadline && !(picture && audible)) {
             const auto update = player.take();
             if (update.state == bilibili::Playback::failed) return 4;
-            picture |= update.frame && !update.frame->nv12.empty();
+            picture |= update.frame && !update.frame->nv12.empty() &&
+                update.frame->bgra.size() == static_cast<size_t>(update.frame->width) * update.frame->height * 4 &&
+                update.frame->bgra[3] == 255;
             pcm.fill(0.f);
             audio->mix(pcm.data(), 128);
             audible |= std::any_of(pcm.begin(), pcm.end(), [](float sample) { return std::abs(sample) > .001f; });
@@ -80,6 +106,3 @@ int main(int argc, char** argv) {
     bilibili::stopServer(*server);
     return 0;
 }
-
-
-

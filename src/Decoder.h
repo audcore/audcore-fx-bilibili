@@ -12,7 +12,7 @@ struct VideoFrame {
     uint32_t width = 0, height = 0;
     int64_t timestamp = 0;
     bool bt709 = true, fullRange = false;
-    std::vector<uint8_t> nv12;
+    std::vector<uint8_t> nv12, bgra;
 };
 
 enum class Playback : int { idle, loading, paused, playing, ended, failed };

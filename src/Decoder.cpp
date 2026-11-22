@@ -228,6 +228,33 @@ public:
     }
 };
 
+// Color conversion runs on the decoder worker. Opaque BGRA is also valid
+// premultiplied BGRA for the native drawing surface.
+void drawPixels(VideoFrame& frame) {
+    const size_t area = static_cast<size_t>(frame.width) * frame.height;
+    frame.bgra.resize(area * 4);
+    const auto* luma = frame.nv12.data();
+    const auto* chroma = luma + area;
+    const int red = frame.fullRange ? (frame.bt709 ? 403 : 359) : (frame.bt709 ? 459 : 409);
+    const int greenU = frame.fullRange ? (frame.bt709 ? 48 : 88) : (frame.bt709 ? 55 : 100);
+    const int greenV = frame.fullRange ? (frame.bt709 ? 120 : 183) : (frame.bt709 ? 136 : 208);
+    const int blue = frame.fullRange ? (frame.bt709 ? 475 : 454) : (frame.bt709 ? 541 : 516);
+    const auto color = [](int value) { return static_cast<uint8_t>(std::clamp((value + 128) >> 8, 0, 255)); };
+    for (uint32_t row = 0; row < frame.height; ++row) {
+        const size_t uv = static_cast<size_t>(row / 2) * frame.width;
+        const size_t line = static_cast<size_t>(row) * frame.width;
+        for (uint32_t column = 0; column < frame.width; ++column) {
+            const int u = chroma[uv + (column & ~1u)] - 128;
+            const int v = chroma[uv + (column | 1u)] - 128;
+            const int y = frame.fullRange ? luma[line + column] * 256 : std::max(0, luma[line + column] - 16) * 298;
+            auto* pixel = frame.bgra.data() + (line + column) * 4;
+            pixel[0] = color(y + blue * u);
+            pixel[1] = color(y - greenU * u - greenV * v);
+            pixel[2] = color(y + red * v);
+            pixel[3] = 255;
+        }
+    }
+}
 struct Request {
     uint32_t id = 0;
     uint64_t file = 0, seek = 0, version = 0;
@@ -395,6 +422,7 @@ struct Decoder::State {
                     auto frame = std::make_shared<VideoFrame>();
                     result = file->frame(sample, *frame);
                     if (SUCCEEDED(result)) {
+                        drawPixels(*frame);
                         shown = true;
                         status(playing ? Playback::playing : Playback::paused, S_OK, std::move(frame));
                     }
@@ -472,6 +500,3 @@ bool verifyHardwareDecode(const std::wstring& url) {
     return false;
 }
 }
-
-
-

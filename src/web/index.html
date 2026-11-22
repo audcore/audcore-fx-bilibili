@@ -11,7 +11,7 @@
 <main id="browse" data-page="search">
   <div class="search-area">
     <header class="brand">
-      <span class="mark" aria-hidden="true">▶</span>
+      <button type="button" id="home" class="mark" aria-label="返回首页" title="返回首页"><span aria-hidden="true">▶</span></button>
       <h1 data-text="name">哔哩哔哩</h1>
     </header>
     <form id="search">
@@ -24,11 +24,8 @@
       <button type="button" id="example-video" data-video="BV1YfJJzVEDF">《武装乙女》</button>
     </div>
   </div>
-  <section id="results" hidden aria-labelledby="results-title">
-    <div class="results-heading">
-      <h2 id="results-title" data-text="results">搜索结果</h2>
-      <p id="status" role="status"></p>
-    </div>
+  <section id="results" hidden aria-label="搜索结果">
+    <p id="status" role="status"></p>
     <ul id="cards"></ul>
     <button type="button" id="more" hidden data-text="more">加载更多</button>
   </section>
@@ -45,7 +42,6 @@
   </header>
   <div class="screen">
     <video id="video" playsinline preload="metadata"></video>
-    <canvas id="picture" hidden></canvas>
     <div id="danmaku-layer" aria-hidden="true"></div>
     <p id="player-status" role="status"></p>
   </div>
