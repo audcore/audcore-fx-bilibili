@@ -381,6 +381,7 @@ class Panel {
     float width = defaultWidth, height = defaultHeight, scale = 1, scroll = 0;
     Box editorBox, seekBox, timeBox, volumeBox;
     unsigned volumeLevel = defaultVolume;
+    int volumeWheelDelta = 0;
     struct VolumeDrag { POINT origin; unsigned level; bool editing = false; };
     std::optional<VolumeDrag> volumeDrag;
     float homeNameWidth = 0, versionWidth = 0, timeWidth = 0;
@@ -587,6 +588,16 @@ private:
             }
             break;
         case WM_MOUSEWHEEL:
+            if (hwnd == panel.volumeControl) {
+                if (!panel.volumeDrag) {
+                    panel.volumeWheelDelta += GET_WHEEL_DELTA_WPARAM(w);
+                    const int steps = panel.volumeWheelDelta / WHEEL_DELTA;
+                    panel.volumeWheelDelta %= WHEEL_DELTA;
+                    const int level = std::clamp(static_cast<int>(panel.volumeLevel) + steps, 0, 100);
+                    panel.setVolumeOnce(static_cast<unsigned>(level));
+                }
+                return 0;
+            }
             if (panel.page == Page::results) { panel.wheel(GET_WHEEL_DELTA_WPARAM(w)); return 0; }
             break;
         case WM_KEYDOWN:
@@ -884,6 +895,7 @@ private:
         seekRevision = 0;
         timeWidth = 0;
         hovering = keyboard = seeking = false;
+        volumeWheelDelta = 0;
         SendMessageW(progress, TBM_SETPOS, FALSE, 0);
         requests->submit({generation, {}, target});
         SetFocus(window);
