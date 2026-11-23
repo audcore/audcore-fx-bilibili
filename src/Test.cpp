@@ -10,6 +10,7 @@
 #include <chrono>
 #include <thread>
 #include <iostream>
+#include <fstream>
 
 namespace {
 bool selectionTest() {
@@ -87,7 +88,7 @@ bool audioTest(uint32_t rate, uint32_t channels) {
         decoded[index] = .5f;
         decoded[index + 1] = -.25f;
     }
-    for (int block = 0; block < 3; ++block) audio.write(decoded.data(), 1024, 2);
+    for (int block = 0; block < 3; ++block) audio.write(decoded.data(), 1024, 2, 48000);
     audio.mix(effectChain.data(), 128);
     const auto gain = std::pow(10.f, -.5f);
     for (size_t index = 0; index < effectChain.size(); index += 2) {
@@ -100,7 +101,7 @@ bool audioTest(uint32_t rate, uint32_t channels) {
     }
     if (effectChain[0] != .25f || effectChain[1] != .25f) return false;
     audio.reset();
-    audio.write(decoded.data(), 1024, 2);
+    audio.write(decoded.data(), 1024, 2, 48000);
     audio.mix(effectChain.data(), 128);
     return effectChain[0] == .25f && effectChain[1] == .25f;
 }
@@ -115,7 +116,7 @@ bool volumeTest() {
     output.fill(.1f);
     audio.volume.store(100);
     audio.mix(output.data(), 512);
-    audio.write(source.data(), 4096, 2);
+    audio.write(source.data(), 4096, 2, 48000);
     audio.mix(output.data(), 512);
     if (std::abs(output.back() - .35f) > .0001f) return false;
     audio.volume.store(0);
@@ -123,9 +124,96 @@ bool volumeTest() {
     audio.mix(output.data(), 512);
     return output.front() > .34f && output.front() < .35f && output.back() == .1f;
 }
+
+bool formatTransitionTest(bool monoFirst) {
+    bilibili::Audio audio;
+    audio.prepare(48000, 2);
+    audio.volume.store(100);
+    audio.playing.store(true);
+    std::array<float, 2400> mono;
+    mono.fill(.25f);
+    std::array<float, 9600> stereo;
+    for (size_t i = 0; i < stereo.size(); i += 2) { stereo[i] = -.5f; stereo[i + 1] = .125f; }
+    std::array<float, 256> output{};
+    audio.mix(output.data(), 128);
+    const auto writeMono = [&] { audio.write(mono.data(), 2400, 1, 24000); };
+    const auto writeStereo = [&] { audio.write(stereo.data(), 4800, 2, 48000); };
+    if (monoFirst) { writeMono(); writeStereo(); } else { writeStereo(); writeMono(); }
+    unsigned monoFrames = 0, stereoFrames = 0;
+    for (int block = 0; block < 90; ++block) {
+        output.fill(0.f);
+        audio.mix(output.data(), 128);
+        for (size_t i = 0; i < output.size(); i += 2) {
+            if (output[i] == .25f && output[i + 1] == .25f) ++monoFrames;
+            else if (output[i] == -.5f && output[i + 1] == .125f) ++stereoFrames;
+            else if (output[i] != 0 || output[i + 1] != 0) return false;
+        }
+    }
+    // Both queued sections are 100 ms. The queue correction is at most 1%.
+    return monoFrames >= 4740 && monoFrames <= 4860 && stereoFrames >= 4740 && stereoFrames <= 4860;
+}
+
+int checkMonoPlayback(const std::wstring& url, std::ostream* capture, const std::wstring& stereoUrl = {}) {
+    using Clock = std::chrono::steady_clock;
+    auto audio = std::make_shared<bilibili::Audio>();
+    audio->prepare(48000, 2);
+    audio->volume.store(100);
+    bilibili::Decoder player([] {});
+    player.load(1, url, 0, audio);
+    player.play(true);
+    const auto verify = [&](uint32_t id, uint64_t revision, int blocks, bool mono, std::ostream* record) {
+        std::array<float, 960> pcm{};
+        auto next = Clock::now();
+        unsigned signalFrames = 0;
+        unsigned stereoFrames = 0;
+        bool picture = false;
+        for (int block = 0; block < blocks; ++block) {
+            const auto update = player.take();
+            if (update.state == bilibili::Playback::failed) return false;
+            picture |= update.id == id && update.seekRevision == revision && static_cast<bool>(update.frame);
+            pcm.fill(0.f);
+            audio->mix(pcm.data(), 480);
+            for (size_t i = 0; i < pcm.size(); i += 2) {
+                if (mono && pcm[i] != pcm[i + 1]) return false;
+                if (std::abs(pcm[i] - pcm[i + 1]) > .001f) ++stereoFrames;
+                if (std::abs(pcm[i]) > .001f) ++signalFrames;
+            }
+            if (record) record->write(reinterpret_cast<const char*>(pcm.data()), sizeof pcm);
+            next += std::chrono::milliseconds(10);
+            std::this_thread::sleep_until(next);
+        }
+        return picture && signalFrames > 12000 && (mono || stereoFrames > 12000) && (!record || *record);
+    };
+    if (!verify(1, 0, 320, true, capture)) return 15;
+    if (!verify(1, player.seek(12.), 220, true, nullptr)) return 16;
+    std::cout << "24 kHz mono source stays mono when mixed at 48 kHz, including after seek\n";
+    if (!stereoUrl.empty()) {
+        player.load(2, stereoUrl, 2, audio);
+        player.play(true);
+        if (!verify(2, 0, 260, false, nullptr)) return 19;
+        player.load(3, url, 0, audio);
+        player.play(true);
+        if (!verify(3, 0, 320, true, nullptr)) return 20;
+        std::cout << "Switching mono to stereo and back keeps the correct channel layout\n";
+    }
+    return 0;
+}
 }
 
 int main(int argc, char** argv) {
+    if ((argc == 3 || argc == 4) && std::string_view(argv[1]) == "--check-mono") {
+        const std::string_view url(argv[2]);
+        std::ofstream capture;
+        if (argc == 4) {
+            capture.open(argv[3], std::ios::binary);
+            if (!capture) return 17;
+        }
+        return checkMonoPlayback(std::wstring(url.begin(), url.end()), argc == 4 ? &capture : nullptr);
+    }
+    if (argc == 4 && std::string_view(argv[1]) == "--check-audio-switch") {
+        const std::string_view mono(argv[2]), stereo(argv[3]);
+        return checkMonoPlayback(std::wstring(mono.begin(), mono.end()), nullptr, std::wstring(stereo.begin(), stereo.end()));
+    }
     if (argc == 3 && std::string_view(argv[1]) == "--api") {
         const std::string_view url(argv[2]);
         const std::wstring base(url.begin(), url.end());
@@ -208,6 +296,11 @@ int main(int argc, char** argv) {
         return 9;
     }
     if (argc == 1) {
+        if (!formatTransitionTest(true) || !formatTransitionTest(false)) {
+            std::cerr << "Queued mono and stereo audio lost their original time scale during a format change\n";
+            return 18;
+        }
+        std::cout << "24/48 kHz transitions preserve frame duration and channel layout in both directions\n";
         if (!volumeTest()) {
             std::cerr << "Source volume changed upstream gain or did not ramp to silence\n";
             return 14;

@@ -142,6 +142,15 @@ def server_test(executable):
                 assert response.status == 206 and len(response.read()) == 64
             subprocess.run([executable, "--decode", base + "api/media.mp4?" + urlencode({"url": media})],
                            check=True, timeout=35)
+            mono_bvid = "BV1vRst6iEQg"
+            with fetch("api/view", {"bvid": mono_bvid}) as response:
+                mono_cid = json.load(response)["data"]["cid"]
+            with fetch("api/play", {"bvid": mono_bvid, "cid": mono_cid}) as response:
+                mono_media = json.load(response)["data"]["durl"][0]["url"]
+            subprocess.run([executable, "--check-audio-switch",
+                            base + "api/media.mp4?" + urlencode({"url": mono_media}),
+                            base + "api/media.mp4?" + urlencode({"url": media})],
+                           check=True, timeout=30)
             print("BILIBILI native loopback search, video details, danmaku, covers, part 2 and MP4 ranges verified")
         finally:
             server.stdin.write("\n")

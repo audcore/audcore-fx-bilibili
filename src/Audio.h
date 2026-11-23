@@ -30,12 +30,13 @@ struct Selection {
     bool operator==(const Selection& other) const { return id == other.id && part == other.part; }
 };
 class Audio {
-    struct Frame { float left, right; };
+    struct Frame { float left, right; uint32_t sourceRate; };
     static constexpr uint32_t capacity = 16384, mask = capacity - 1;
     std::array<Frame, capacity> queue{};
     std::atomic<uint32_t> head{0}, tail{0}, flush{0};
     uint32_t appliedFlush = 0;
     double fraction = 0;
+    uint32_t lastSourceRate = 0;
     bool primed = false;
     float gain = volumeGains[defaultVolume];
     uint32_t channels = 2;
@@ -44,7 +45,7 @@ class Audio {
     std::map<const void*, std::function<void()>> selectionListeners;
 
 public:
-    std::atomic<uint32_t> rate{0}, sourceRate{48000};
+    std::atomic<uint32_t> rate{0};
     std::atomic<uint32_t> volume{defaultVolume};
     std::atomic<bool> bypass{false}, playing{false};
 
@@ -77,12 +78,13 @@ public:
         rate.store(sampleRate, std::memory_order_release);
     }
 
-    bool write(const float* samples, uint32_t frames, uint32_t sourceChannels) noexcept {
+    bool write(const float* samples, uint32_t frames, uint32_t sourceChannels, uint32_t sourceRate) noexcept {
         if (!playing.load(std::memory_order_acquire) || bypass.load(std::memory_order_relaxed)) return true;
         const auto first = head.load(std::memory_order_relaxed);
         if (frames > capacity - (first - tail.load(std::memory_order_acquire))) return false;
         for (uint32_t index = 0; index < frames; ++index)
-            queue[(first + index) & mask] = {samples[sourceChannels * index], samples[sourceChannels * index + sourceChannels - 1]};
+            queue[(first + index) & mask] = {samples[sourceChannels * index],
+                samples[sourceChannels * index + sourceChannels - 1], sourceRate};
         head.store(first + frames, std::memory_order_release);
         return true;
     }
@@ -95,28 +97,38 @@ public:
             appliedFlush = generation;
             tail.store(end, std::memory_order_release);
             fraction = 0;
+            lastSourceRate = 0;
             primed = false;
             return;
         }
         const auto sampleRate = rate.load(std::memory_order_relaxed);
-        const auto inputRate = sourceRate.load(std::memory_order_relaxed);
-        const auto target = inputRate * 64 / 1000;
-        if (!sampleRate || !stereo || (!primed && end - cursor < target)) return;
+        if (!sampleRate || !stereo) return;
+        if (end == cursor) { primed = false; return; }
+        const auto sourceRate = queue[cursor & mask].sourceRate;
+        if (!primed && end - cursor < sourceRate * 64 / 1000) return;
         const float targetGain = volumeGains[volume.load(std::memory_order_relaxed)];
         if (!primed) gain = targetGain;
         primed = true;
         const float gainStep = 100.f / static_cast<float>(sampleRate);
-        const auto correction = std::clamp((static_cast<double>(end - cursor) - target) * 0.000004, -0.01, 0.01);
-        const auto ratio = static_cast<double>(inputRate) / sampleRate * (1.0 + correction);
+        uint32_t blockSourceRate = 0;
+        double ratio = 0;
         for (uint32_t index = 0; index < frames; ++index) {
+            const auto& a = queue[cursor & mask];
+            if (a.sourceRate != blockSourceRate) {
+                blockSourceRate = a.sourceRate;
+                const auto target = blockSourceRate * 64 / 1000;
+                const auto correction = std::clamp((static_cast<double>(end - cursor) - target) * 0.000004, -0.01, 0.01);
+                ratio = static_cast<double>(blockSourceRate) / sampleRate * (1.0 + correction);
+                if (lastSourceRate != blockSourceRate) { fraction = 0; lastSourceRate = blockSourceRate; }
+            }
             const double next = fraction + ratio;
             const auto advance = static_cast<uint32_t>(next);
             if (end - cursor <= std::max(advance, 1u)) {
                 primed = false;
                 break;
             }
-            const auto& a = queue[cursor & mask];
-            const auto& b = queue[(cursor + 1) & mask];
+            const auto& nextFrame = queue[(cursor + 1) & mask];
+            const auto& b = nextFrame.sourceRate == a.sourceRate ? nextFrame : a;
             gain += std::clamp(targetGain - gain, -gainStep, gainStep);
             const float left = (a.left + static_cast<float>(fraction) * (b.left - a.left)) * gain;
             const float right = (a.right + static_cast<float>(fraction) * (b.right - a.right)) * gain;

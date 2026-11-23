@@ -67,6 +67,20 @@ class File {
     VideoArea visible{};
     double pixelAspect = 1;
     bool bt709 = true, fullRange = false;
+    bool refreshAudioType = true;
+    uint32_t channels = 0, sampleRate = 0;
+
+    HRESULT updateAudioType(IMFMediaType* type) {
+        UINT32 newRate = 0, newChannels = 0;
+        GUID subtype{};
+        if (FAILED(type->GetGUID(MF_MT_SUBTYPE, &subtype)) || subtype != MFAudioFormat_Float ||
+            FAILED(type->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &newChannels)) ||
+            FAILED(type->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &newRate)) ||
+            (newChannels != 1 && newChannels != 2) || newRate < 8000 || newRate > 96000) return MF_E_INVALIDMEDIATYPE;
+        channels = newChannels;
+        sampleRate = newRate;
+        return S_OK;
+    }
 
     bool getDevice() {
         ComPtr<IDXGIFactory1> factory;
@@ -93,7 +107,7 @@ class File {
 
 public:
     double duration = 0;
-    uint32_t channels = 0, sampleRate = 0;
+    bool hasAudio = false;
 
     HRESULT open(const std::wstring& url) {
         if (!getDevice()) return hardwareUnavailable;
@@ -118,16 +132,13 @@ public:
         if (FAILED(reader->SetCurrentMediaType(videoStream, nullptr, type.Get()))) return hardwareUnavailable;
         if (FAILED(result = updateVideoType())) return result;
 
-        if (SUCCEEDED(reader->SetStreamSelection(audioStream, TRUE))) {
+        hasAudio = SUCCEEDED(reader->SetStreamSelection(audioStream, TRUE));
+        if (hasAudio) {
             type.Reset();
             if (FAILED(result = MFCreateMediaType(&type))) return result;
             type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
             type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_Float);
             if (FAILED(result = reader->SetCurrentMediaType(audioStream, nullptr, type.Get()))) return result;
-            if (FAILED(result = reader->GetCurrentMediaType(audioStream, &type))) return result;
-            if (FAILED(type->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &channels)) ||
-                FAILED(type->GetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, &sampleRate)) ||
-                (channels != 1 && channels != 2) || sampleRate < 8000 || sampleRate > 96000) return MF_E_INVALIDMEDIATYPE;
         }
         PROPVARIANT length{};
         if (SUCCEEDED(reader->GetPresentationAttribute(static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE), MF_PD_DURATION, &length)) &&
@@ -170,13 +181,16 @@ public:
         PROPVARIANT time{};
         time.vt = VT_I8;
         time.hVal.QuadPart = static_cast<LONGLONG>(position * ticks);
-        return reader->SetCurrentPosition(GUID_NULL, time);
+        const auto result = reader->SetCurrentPosition(GUID_NULL, time);
+        if (SUCCEEDED(result)) refreshAudioType = true;
+        return result;
     }
 
     struct Sample {
         ComPtr<IMFSample> payload;
         DWORD stream = 0;
         LONGLONG timestamp = 0;
+        uint32_t audioRate = 0, audioChannels = 0;
         bool video = false;
         bool end = false;
     };
@@ -191,9 +205,22 @@ public:
         ComPtr<IMFMediaType> type;
         GUID major{};
         const bool typeChanged = (flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0;
-        if ((sample.payload || sample.end || typeChanged) && SUCCEEDED(reader->GetCurrentMediaType(sample.stream, &type)) &&
-            SUCCEEDED(type->GetGUID(MF_MT_MAJOR_TYPE, &major))) sample.video = major == MFMediaType_Video;
-        if (sample.video && typeChanged) return updateVideoType();
+        const bool nativeChanged = (flags & MF_SOURCE_READERF_NATIVEMEDIATYPECHANGED) != 0;
+        if (!sample.payload && !sample.end && !typeChanged && !nativeChanged) return S_OK;
+        if (FAILED(result = reader->GetCurrentMediaType(sample.stream, &type)) ||
+            FAILED(result = type->GetGUID(MF_MT_MAJOR_TYPE, &major))) return result;
+        sample.video = major == MFMediaType_Video;
+        if (sample.video) return typeChanged ? updateVideoType() : S_OK;
+        if (major == MFMediaType_Audio) {
+            // The first AAC output can arrive with a different type from negotiation.
+            refreshAudioType |= typeChanged || nativeChanged;
+            if (sample.payload && refreshAudioType) {
+                if (FAILED(result = updateAudioType(type.Get()))) return result;
+                refreshAudioType = false;
+            }
+            sample.audioRate = sampleRate;
+            sample.audioChannels = channels;
+        }
         return S_OK;
     }
 
@@ -238,7 +265,7 @@ public:
     }
 
     HRESULT pcm(const Sample& sample, const std::shared_ptr<Audio>& audio, double skip) const {
-        if (!channels || !audio) return S_OK;
+        if (!sample.audioChannels || !audio) return S_OK;
         ComPtr<IMFMediaBuffer> buffer;
         auto result = sample.payload->ConvertToContiguousBuffer(&buffer);
         if (FAILED(result)) return result;
@@ -246,9 +273,13 @@ public:
         DWORD length = 0;
         result = buffer->Lock(&bytes, nullptr, &length);
         if (FAILED(result)) return result;
-        const auto frames = static_cast<uint32_t>(length / (sizeof(float) * channels));
-        const auto offset = std::min(frames, static_cast<uint32_t>(std::max(0.0, skip) * sampleRate));
-        if (frames > offset) audio->write(reinterpret_cast<const float*>(bytes) + offset * channels, frames - offset, channels);
+        const auto stride = sizeof(float) * sample.audioChannels;
+        if (length % stride != 0) { buffer->Unlock(); return MF_E_INVALIDMEDIATYPE; }
+        const auto frames = static_cast<uint32_t>(length / stride);
+        const auto offset = static_cast<uint32_t>(std::clamp(skip * sample.audioRate, 0., static_cast<double>(frames)));
+        if (frames > offset)
+            audio->write(reinterpret_cast<const float*>(bytes) + offset * sample.audioChannels, frames - offset,
+                sample.audioChannels, sample.audioRate);
         buffer->Unlock();
         return S_OK;
     }
@@ -379,10 +410,7 @@ struct Decoder::State {
                 file = std::make_unique<File>();
                 const auto opened = SUCCEEDED(media.status) ? file->open(active.url) : media.status;
                 if (FAILED(opened)) { fail(opened); wait(active.version); continue; }
-                if (active.audio && file->sampleRate) {
-                    active.audio->sourceRate.store(file->sampleRate, std::memory_order_release);
-                    active.audio->reset();
-                }
+                if (active.audio && file->hasAudio) active.audio->reset();
                 if (file->duration > 0) position = seekTo = std::min(seekTo, std::max(0., file->duration - 0.05));
                 if (seekTo > 0) {
                     const auto result = file->seek(seekTo);
@@ -420,7 +448,7 @@ struct Decoder::State {
                     const bool isVideo = !playing || sample.video;
                     if (isVideo) firstVideoEnded = true;
                     else firstAudioEnded = true;
-                    if (!playing || (firstVideoEnded && (firstAudioEnded || !file->channels)) ||
+                    if (!playing || (firstVideoEnded && (firstAudioEnded || !file->hasAudio)) ||
                         (file->duration > 0 && position >= file->duration - .05)) {
                         if (playing && file->duration > position) {
                             const auto delay = std::chrono::duration<double>(std::min(.15, file->duration - position));
@@ -534,7 +562,7 @@ bool verifyHardwareDecode(const std::wstring& url) {
         if (FAILED(file.read(true, sample)) || sample.end) return false;
         if (sample.payload) {
             VideoFrame frame;
-            return SUCCEEDED(file.frame(sample, frame)) && !frame.bgra.empty() && file.sampleRate > 0;
+            return SUCCEEDED(file.frame(sample, frame)) && !frame.bgra.empty() && file.hasAudio;
         }
     }
     return false;
