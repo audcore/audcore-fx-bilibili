@@ -1159,8 +1159,12 @@ private:
         if (status) label(g, status, {8, height / 2 - 18, width - 16, 36}, 15, ink, false, true);
         if (!hovering && !keyboard) return;
         const float margin = inset();
+        // The straight bars must fully cover the pixels along the client edges.
+        const auto smoothing = g.GetSmoothingMode();
+        g.SetSmoothingMode(SmoothingModeNone);
         fill(g, {0, 0, width, toolbarHeight}, toolbar);
         fill(g, {0, height - toolbarHeight, width, toolbarHeight}, toolbar);
+        g.SetSmoothingMode(smoothing);
         const float x = margin + 47.f;
         const float titleWidth = rightControlsX() - 11.f - x;
         if (titleWidth > 0)
