@@ -29,6 +29,7 @@ using Microsoft::WRL::ComPtr;
 using Clock = std::chrono::steady_clock;
 constexpr wchar_t windowClass[] = L"Audcore.Bilibili.Panel.2";
 constexpr UINT taskReady = WM_APP + 70, videoReady = WM_APP + 71, selectionReady = WM_APP + 72;
+constexpr UINT_PTR videoRefreshTimer = 1;
 constexpr wchar_t demo[] = L"BV1YfJJzVEDF", demoTitle[] = L"《武装乙女》";
 constexpr wchar_t version[] = L"v" BILIBILI_VERSION;
 constexpr wchar_t purchaseUrl[] = L"https://audcore.utae.cn/bilibili/";
@@ -657,7 +658,17 @@ private:
             if (requests && w == reinterpret_cast<WPARAM>(this)) updateRequests();
             return 0;
         case videoReady:
-            if (decoder && w == reinterpret_cast<WPARAM>(this)) updateVideo(decoder->take());
+            if (decoder && w == reinterpret_cast<WPARAM>(this)) {
+                // Keep the decoder's latest frame pending until the next timer turn.
+                // Consecutive posted frames and paints can starve the host's meter timer.
+                if (!SetTimer(hwnd, videoRefreshTimer, USER_TIMER_MINIMUM, nullptr))
+                    updateVideo(decoder->take());
+            }
+            return 0;
+        case WM_TIMER:
+            if (w != videoRefreshTimer) break;
+            KillTimer(hwnd, videoRefreshTimer);
+            if (decoder) updateVideo(decoder->take());
             return 0;
         case selectionReady:
             if (audio && w == reinterpret_cast<WPARAM>(this)) openSelection(audio->video());
@@ -1207,20 +1218,21 @@ private:
         return SUCCEEDED(gpuTarget->EndDraw()) && valid;
     }
     void paint(HWND hwnd) {
-        PAINTSTRUCT state{};
-        const auto dc = BeginPaint(hwnd, &state);
         RECT bounds{};
         GetClientRect(hwnd, &bounds);
-        if (bounds.right > 0 && bounds.bottom > 0) {
-            if (page == Page::player && Clock::now() >= gpuRetry) {
-                if (paintGpu(static_cast<UINT>(bounds.right), static_cast<UINT>(bounds.bottom))) {
-                    buffer.reset();
-                    EndPaint(hwnd, &state);
-                    return;
-                }
-                resetGpu();
-                gpuRetry = Clock::now() + std::chrono::seconds(1);
+        if (bounds.right > 0 && bounds.bottom > 0 && page == Page::player && Clock::now() >= gpuRetry) {
+            if (paintGpu(static_cast<UINT>(bounds.right), static_cast<UINT>(bounds.bottom))) {
+                buffer.reset();
+                // Direct2D presents its own surface. Clear the update region after presentation.
+                ValidateRect(hwnd, nullptr);
+                return;
             }
+            resetGpu();
+            gpuRetry = Clock::now() + std::chrono::seconds(1);
+        }
+        PAINTSTRUCT state{};
+        const auto dc = BeginPaint(hwnd, &state);
+        if (bounds.right > 0 && bounds.bottom > 0) {
             if (page != Page::player && gpuTarget) resetGpu();
             if (!buffer || buffer->GetWidth() != static_cast<UINT>(bounds.right) || buffer->GetHeight() != static_cast<UINT>(bounds.bottom))
                 buffer = std::make_unique<Bitmap>(bounds.right, bounds.bottom, PixelFormat32bppPARGB);
