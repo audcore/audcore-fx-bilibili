@@ -12,6 +12,7 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <gdiplus.h>
+#include <d2d1.h>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -24,6 +25,7 @@
 namespace {
 using namespace bilibili;
 using namespace Gdiplus;
+using Microsoft::WRL::ComPtr;
 using Clock = std::chrono::steady_clock;
 constexpr wchar_t windowClass[] = L"Audcore.Bilibili.Panel.2";
 constexpr UINT taskReady = WM_APP + 70, videoReady = WM_APP + 71, selectionReady = WM_APP + 72;
@@ -227,19 +229,37 @@ void drawIcon(Graphics& g, Action action, Box box, Color color, bool playing) {
     default: break;
     }
 }
-void image(Graphics& g, const uint8_t* pixels, uint32_t width, uint32_t height, Box box, bool crop, double pixelAspect = 1.) {
-    if (!pixels || !width || !height || box.w <= 0 || box.h <= 0) return;
-    Bitmap bitmap(static_cast<INT>(width), static_cast<INT>(height), static_cast<INT>(width * 4),
-        PixelFormat32bppPARGB, const_cast<BYTE*>(pixels));
+Box fitImage(uint32_t width, uint32_t height, Box box, bool crop, double pixelAspect) {
     const auto displayWidth = static_cast<float>(width * pixelAspect);
     const float xScale = box.w / displayWidth, yScale = box.h / static_cast<float>(height);
     const float factor = crop ? std::max(xScale, yScale) : std::min(xScale, yScale);
     const float w = displayWidth * factor, h = static_cast<float>(height) * factor;
+    return {box.x + (box.w - w) / 2, box.y + (box.h - h) / 2, w, h};
+}
+D2D1_RECT_F deviceRect(Box box) {
+    return D2D1::RectF(box.x, box.y, box.x + box.w, box.y + box.h);
+}
+HRESULT upload(ID2D1RenderTarget& target, ComPtr<ID2D1Bitmap>& bitmap, UINT width, UINT height,
+    const uint8_t* pixels, D2D1_ALPHA_MODE alpha) {
+    const auto size = D2D1::SizeU(width, height);
+    if (bitmap) {
+        const auto old = bitmap->GetPixelSize();
+        if (old.width == width && old.height == height)
+            return bitmap->CopyFromMemory(nullptr, pixels, width * 4);
+        bitmap.Reset();
+    }
+    const auto props = D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, alpha), 96, 96);
+    return target.CreateBitmap(size, pixels, width * 4, props, bitmap.GetAddressOf());
+}
+void image(Graphics& g, const uint8_t* pixels, uint32_t width, uint32_t height, Box box, bool crop, double pixelAspect = 1.) {
+    if (!pixels || !width || !height || box.w <= 0 || box.h <= 0) return;
+    Bitmap bitmap(static_cast<INT>(width), static_cast<INT>(height), static_cast<INT>(width * 4),
+        PixelFormat32bppPARGB, const_cast<BYTE*>(pixels));
     const auto saved = g.Save();
     g.SetClip(box.rect(), CombineModeIntersect);
     ImageAttributes attributes;
     attributes.SetWrapMode(WrapModeTileFlipXY);
-    g.DrawImage(&bitmap, RectF(box.x + (box.w - w) / 2, box.y + (box.h - h) / 2, w, h),
+    g.DrawImage(&bitmap, fitImage(width, height, box, crop, pixelAspect).rect(),
         0, 0, static_cast<float>(width), static_cast<float>(height), UnitPixel, &attributes);
     g.Restore(saved);
 }
@@ -321,6 +341,7 @@ class Panel {
         std::wstring value;
         TextStyle style;
         TextPixels pixels;
+        ComPtr<ID2D1Bitmap> gpu;
     };
 
     HWND parent, window = nullptr, edit = nullptr, progress = nullptr, volumeControl = nullptr;
@@ -343,6 +364,12 @@ class Panel {
     std::vector<Button> buttons;
     std::shared_ptr<const VideoFrame> frame;
     std::unique_ptr<Bitmap> buffer;
+    ComPtr<ID2D1Factory> gpuFactory;
+    ComPtr<ID2D1HwndRenderTarget> gpuTarget;
+    ComPtr<ID2D1Bitmap> gpuVideo, topLayer, bottomLayer, statusLayer;
+    std::shared_ptr<const VideoFrame> uploadedFrame;
+    std::vector<uint8_t> layerPixels;
+    Clock::time_point gpuRetry{};
     std::list<TextEntry> textCache;
     size_t cachedTextBytes = 0;
     HFONT editFont = nullptr;
@@ -370,6 +397,7 @@ public:
         if (requests) requests->stop();
         decoder.reset();
         if (server) stopServer(*server);
+        resetGpu();
         if (window) DestroyWindow(window);
         if (editFont) DeleteObject(editFont);
         if (editBrush) DeleteObject(editBrush);
@@ -1031,9 +1059,9 @@ private:
         nextComment = static_cast<size_t>(std::lower_bound(comments.begin(), comments.end(), now,
             [](const Comment& comment, double seconds) { return comment.time < seconds; }) - comments.begin());
     }
-    void videoText(Graphics& g, std::wstring_view value, Box box, float size, Color color,
+    TextEntry* videoTextEntry(std::wstring_view value, Box box, float size, Color color,
         bool bold = false, bool wrap = false, bool center = false) {
-        if (value.empty() || box.w < 1 || box.h < 1) return;
+        if (value.empty() || box.w < 1 || box.h < 1) return nullptr;
         const TextStyle style{static_cast<unsigned>(std::ceil(box.w * scale)),
             static_cast<unsigned>(std::ceil(box.h * scale)), size * scale, color.GetValue(), bold, wrap, center};
         const auto existing = std::find_if(textCache.begin(), textCache.end(), [&](const auto& entry) {
@@ -1048,9 +1076,16 @@ private:
                 textCache.pop_back();
             }
             cachedTextBytes += pixels.bytes.size();
-            textCache.push_front({std::wstring(value), style, std::move(pixels)});
+            textCache.push_front({std::wstring(value), style, std::move(pixels), {}});
         }
-        auto& pixels = textCache.front().pixels;
+        return &textCache.front();
+    }
+    void videoText(Graphics& g, std::wstring_view value, Box box, float size, Color color,
+        bool bold = false, bool wrap = false, bool center = false) {
+        const auto entry = videoTextEntry(value, box, size, color, bold, wrap, center);
+        if (!entry) return;
+        auto& pixels = entry->pixels;
+        const auto& style = entry->style;
         if (pixels.bytes.empty()) {
             label(g, value, box, size, color, bold, false, wrap, center ? StringAlignmentCenter : StringAlignmentNear);
             return;
@@ -1061,7 +1096,8 @@ private:
         g.DrawImage(&bitmap, RectF(box.x, box.y + pixels.offsetY / scale, style.width / scale, style.height / scale));
         g.Restore(saved);
     }
-    void paintComments(Graphics& g) {
+    template<class Draw>
+    void paintComments(Draw draw) {
         if (!dm) return;
         const unsigned lanes = static_cast<unsigned>(std::clamp(height * .45f / 26, 1.f, 10.f));
         shown.erase(std::remove_if(shown.begin(), shown.end(), [&](const auto& item) {
@@ -1087,9 +1123,88 @@ private:
             const float x = comment.mode == 1 ? width - offset * (width + length) : (width - length) / 2;
             const float lane = static_cast<float>(item.lane);
             const float y = comment.mode == 4 ? height - 32 - lane * 26 : 6 + lane * 26;
-            videoText(g, comment.text, {x + 1, y + 1, length, 26}, 19, dark, true);
-            videoText(g, comment.text, {x, y, length, 26}, 19, Color(0xff000000u | comment.color), true);
+            draw(comment.text, Box{x + 1, y + 1, length, 26}, dark);
+            draw(comment.text, Box{x, y, length, 26}, Color(0xff000000u | comment.color));
         }
+    }
+    void resetGpu() {
+        for (auto& entry : textCache) entry.gpu.Reset();
+        gpuVideo.Reset();
+        uploadedFrame.reset();
+        topLayer.Reset();
+        bottomLayer.Reset();
+        statusLayer.Reset();
+        gpuTarget.Reset();
+    }
+    bool prepareGpu(UINT w, UINT h) {
+        const auto size = D2D1::SizeU(w, h);
+        if (gpuTarget) {
+            const auto current = gpuTarget->GetPixelSize();
+            return (current.width == w && current.height == h) || SUCCEEDED(gpuTarget->Resize(size));
+        }
+        if (!gpuFactory && FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, gpuFactory.GetAddressOf())))
+            return false;
+        const auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_HARDWARE,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 96, 96);
+        return SUCCEEDED(gpuFactory->CreateHwndRenderTarget(props,
+            D2D1::HwndRenderTargetProperties(window, size, D2D1_PRESENT_OPTIONS_IMMEDIATELY), gpuTarget.GetAddressOf()));
+    }
+    template<class Draw>
+    bool paintLayer(ComPtr<ID2D1Bitmap>& texture, UINT w, UINT h, UINT y, Draw draw) {
+        // Only the overlay bands need a CPU surface. Their bytes stay premultiplied.
+        layerPixels.resize(static_cast<size_t>(w) * h * 4);
+        {
+            Bitmap layer(w, h, w * 4, PixelFormat32bppPARGB, layerPixels.data());
+            Graphics g(&layer);
+            g.Clear(Color(0, 0, 0, 0));
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            g.SetInterpolationMode(InterpolationModeBilinear);
+            g.SetTextRenderingHint(TextRenderingHintAntiAliasGridFit);
+            g.TranslateTransform(0, -static_cast<float>(y));
+            g.ScaleTransform(scale, scale);
+            draw(g);
+        }
+        if (FAILED(upload(*gpuTarget.Get(), texture, w, h, layerPixels.data(), D2D1_ALPHA_MODE_PREMULTIPLIED))) return false;
+        gpuTarget->DrawBitmap(texture.Get(), D2D1::RectF(0, static_cast<float>(y),
+            static_cast<float>(w), static_cast<float>(y + h)), 1, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+        return true;
+    }
+    bool paintGpu(UINT w, UINT h) {
+        if (!prepareGpu(w, h)) return false;
+        if (gpuTarget->CheckWindowState() & D2D1_WINDOW_STATE_OCCLUDED) return true;
+        if (frame && frame != uploadedFrame) {
+            if (FAILED(upload(*gpuTarget.Get(), gpuVideo, frame->width, frame->height, frame->bgra.data(), D2D1_ALPHA_MODE_IGNORE)))
+                return false;
+            uploadedFrame = frame;
+        }
+        gpuTarget->BeginDraw();
+        gpuTarget->Clear(D2D1::ColorF(D2D1::ColorF::Black));
+        if (frame && gpuVideo) {
+            const auto picture = fitImage(frame->width, frame->height,
+                {0, 0, static_cast<float>(w), static_cast<float>(h)}, false, frame->pixelAspect);
+            gpuTarget->DrawBitmap(gpuVideo.Get(), deviceRect(picture));
+        }
+        bool valid = true;
+        paintComments([&](const std::wstring& value, Box box, Color color) {
+            const auto entry = videoTextEntry(value, box, 19, color, true);
+            if (!entry) return;
+            if (entry->pixels.bytes.empty() || (!entry->gpu &&
+                FAILED(upload(*gpuTarget.Get(), entry->gpu, entry->style.width, entry->style.height,
+                    entry->pixels.bytes.data(), D2D1_ALPHA_MODE_PREMULTIPLIED)))) { valid = false; return; }
+            gpuTarget->DrawBitmap(entry->gpu.Get(), deviceRect({box.x * scale, box.y * scale,
+                static_cast<float>(entry->style.width), static_cast<float>(entry->style.height)}));
+        });
+        if (status) {
+            const auto band = std::min(h, static_cast<UINT>(std::ceil(36 * scale)) + 2);
+            valid &= paintLayer(statusLayer, w, band, (h - band) / 2, [&](Graphics& g) { paintStatus(g); });
+        }
+        if (hovering || keyboard) {
+            const auto band = std::min(h, static_cast<UINT>(std::ceil(toolbarHeight * scale)));
+            const auto controls = [&](Graphics& g) { paintPlayerControls(g); paintButtons(g); };
+            valid &= paintLayer(topLayer, w, band, 0, controls);
+            valid &= paintLayer(bottomLayer, w, band, h - band, controls);
+        }
+        return SUCCEEDED(gpuTarget->EndDraw()) && valid;
     }
     void paint(HWND hwnd) {
         PAINTSTRUCT state{};
@@ -1097,6 +1212,16 @@ private:
         RECT bounds{};
         GetClientRect(hwnd, &bounds);
         if (bounds.right > 0 && bounds.bottom > 0) {
+            if (page == Page::player && Clock::now() >= gpuRetry) {
+                if (paintGpu(static_cast<UINT>(bounds.right), static_cast<UINT>(bounds.bottom))) {
+                    buffer.reset();
+                    EndPaint(hwnd, &state);
+                    return;
+                }
+                resetGpu();
+                gpuRetry = Clock::now() + std::chrono::seconds(1);
+            }
+            if (page != Page::player && gpuTarget) resetGpu();
             if (!buffer || buffer->GetWidth() != static_cast<UINT>(bounds.right) || buffer->GetHeight() != static_cast<UINT>(bounds.bottom))
                 buffer = std::make_unique<Bitmap>(bounds.right, bounds.bottom, PixelFormat32bppPARGB);
             {
@@ -1155,9 +1280,14 @@ private:
     void paintPlayer(Graphics& g) {
         if (frame && !frame->bgra.empty())
             image(g, frame->bgra.data(), frame->width, frame->height, {0, 0, width, height}, false, frame->pixelAspect);
-        paintComments(g);
+        paintComments([&](const std::wstring& value, Box box, Color color) { videoText(g, value, box, 19, color, true); });
+        paintStatus(g);
+        if (hovering || keyboard) paintPlayerControls(g);
+    }
+    void paintStatus(Graphics& g) {
         if (status) label(g, status, {8, height / 2 - 18, width - 16, 36}, 15, ink, false, true);
-        if (!hovering && !keyboard) return;
+    }
+    void paintPlayerControls(Graphics& g) {
         const float margin = inset();
         // The straight bars must fully cover the pixels along the client edges.
         const auto smoothing = g.GetSmoothingMode();

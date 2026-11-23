@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(BilibiliFx VERSION 0.2.8 LANGUAGES CXX RC)
+project(BilibiliFx VERSION 0.2.9 LANGUAGES CXX RC)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_compile_definitions(_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
