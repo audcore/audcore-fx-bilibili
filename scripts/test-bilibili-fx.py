@@ -46,7 +46,7 @@ def main(path):
     assert definition["fuid"] == rack.fuid.decode()
     library.audcore_fx_get_editor.restype = handle
     editor = library.audcore_fx_get_editor(1)
-    assert editor and tuple(c.cast(editor, c.POINTER(c.c_int32 * 4)).contents[2:]) == (720, 540)
+    assert editor and tuple(c.cast(editor, c.POINTER(c.c_int32 * 4)).contents[2:]) == (720, 405)
     instances = [rack.create(), rack.create()]
     assert all(instances)
     try:

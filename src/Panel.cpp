@@ -37,6 +37,7 @@ const Color background(0xff181519), surface(0xff241f26), control(0xff312932), ho
     playerInk(0xfff5f5f5), playerButton(0xff262626), playerHover(0xff3a3a3a), playerSelected(0xff515151);
 constexpr float thumbRadius = 4.f;
 constexpr float toolbarHeight = 50.f;
+constexpr int32_t defaultWidth = 720, defaultHeight = 405;
 
 struct Words {
     const wchar_t *name, *home, *search, *placeholder, *sample, *more, *back, *danmaku, *parts,
@@ -349,7 +350,7 @@ class Panel {
     ULONG_PTR gdiplus = 0;
     size_t usedButtons = 0, nextComment = 0;
     uint32_t generation = 0;
-    float width = 720, height = 540, scale = 1, scroll = 0;
+    float width = defaultWidth, height = defaultHeight, scale = 1, scroll = 0;
     Box editorBox, seekBox, timeBox, volumeBox;
     unsigned volumeLevel = defaultVolume;
     struct VolumeDrag { POINT origin; unsigned level; bool editing = false; };
@@ -1228,7 +1229,7 @@ private:
 
 extern "C" AUDCORE_FX_EXPORT const AudcoreFxEditor* audcore_fx_get_editor(uint32_t abi) {
     static const AudcoreFxEditor api{
-        sizeof api, 1, 720, 540,
+        sizeof api, 1, defaultWidth, defaultHeight,
         [](void* parent, const double* values, size_t count, int32_t width, int32_t height, float scale, AudcoreFxEdit edit, void* context) -> void* {
             if (!parent) return nullptr;
             try {

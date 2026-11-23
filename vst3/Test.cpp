@@ -101,8 +101,11 @@ int main(int argc, char** argv) try {
         controller->getParamNormalized(volume.id) == .5, "Host volume parameter defaults to 50 percent");
     auto* view = controller->createView(ViewType::kEditor);
     ViewRect rect{};
-    check(view && view->getSize(&rect) == kResultOk && rect.getWidth() == 720 && rect.getHeight() == 540 &&
+    check(view && view->getSize(&rect) == kResultOk && rect.getWidth() == 720 && rect.getHeight() == 405 &&
         view->canResize() == kResultTrue, "Resizable native editor");
+    ViewRect custom{0, 0, 640, 480};
+    check(view->checkSizeConstraint(&custom) == kResultOk && custom.getWidth() == 640 && custom.getHeight() == 480,
+        "Custom aspect ratio remains available");
     view->release();
 
     Stream selection;
